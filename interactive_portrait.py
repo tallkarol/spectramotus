@@ -1,7 +1,14 @@
 #!/usr/bin/env python3
 """
-Spectramotus Interactive Portrait Player
+Spectramotus Interactive Portrait Player - Fixed Version
 Plays LivePortrait clips based on MediaPipe gesture detection
+
+Improvements:
+- Dynamic aspect ratio display
+- Fixed gesture mapping (only uses gestures that actually work)
+- Webcam preview off by default
+- Better visual feedback
+- Cleaner code structure
 """
 
 import cv2
@@ -15,18 +22,28 @@ import time
 # Configuration
 PHOTO_NAME = "karol-photo"
 CLIPS_DIR = f"generated_clips/{PHOTO_NAME}"
-DISPLAY_WIDTH = 600
-DISPLAY_HEIGHT = 720
-WEBCAM_PREVIEW_SIZE = 20  # Size of webcam preview in corner
 
-# Gesture to clip mapping
+# Display settings (will be calculated dynamically)
+DISPLAY_WIDTH = None
+DISPLAY_HEIGHT = None
+WEBCAM_PREVIEW_SIZE = 200
+
+# Gesture to clip mapping - ONLY gestures that actually work
 GESTURE_MAP = {
     "thumbs_up": "smile",
     "wave": "sup_dude",
     "pointing_left": "look_left",
     "pointing_right": "look_right",
-    "none": "idle"  # Default when no gesture detected
+    "none": "idle"
 }
+
+# Colors
+COLOR_WHITE = (255, 255, 255)
+COLOR_BLACK = (0, 0, 0)
+COLOR_GREEN = (0, 255, 0)
+COLOR_YELLOW = (255, 255, 0)
+COLOR_RED = (255, 0, 0)
+COLOR_BLUE = (100, 100, 255)
 
 class GestureDetector:
     """Detects hand gestures using MediaPipe"""
@@ -94,37 +111,57 @@ class GestureDetector:
         ring_mcp = landmarks.landmark[13]
         pinky_mcp = landmarks.landmark[17]
         
-        # Thumbs up: thumb extended, other fingers curled
-        if (thumb_tip.y < index_mcp.y and 
-            index_tip.y > index_mcp.y and
-            middle_tip.y > middle_mcp.y):
-            return "thumbs_up"
-        
-        # Wave: hand raised with fingers extended (similar to open palm but hand is raised)
-        # Check if most fingers are extended and hand is raised (wrist below fingertips)
+        # Check if fingers are extended
         fingers_extended = (
             index_tip.y < index_mcp.y and
             middle_tip.y < middle_mcp.y and
             ring_tip.y < ring_mcp.y and
             pinky_tip.y < pinky_mcp.y
         )
-        hand_raised = wrist.y > middle_tip.y  # Wrist is below fingertips when hand is raised
         
-        if fingers_extended and hand_raised:
-            return "wave"
-        
-        # Pointing up: only index extended
-        if (index_tip.y < index_mcp.y and
+        # Thumbs up: thumb extended upward, other fingers curled
+        if (thumb_tip.y < index_mcp.y and 
+            index_tip.y > index_mcp.y and
             middle_tip.y > middle_mcp.y and
             ring_tip.y > ring_mcp.y):
-            return "pointing_up"
+            return "thumbs_up"
         
-        # Open palm: all fingers extended (but hand not necessarily raised)
-        if (index_tip.y < index_mcp.y and
-            middle_tip.y < middle_mcp.y and
-            ring_tip.y < ring_mcp.y and
-            pinky_tip.y < pinky_mcp.y):
-            return "open_palm"
+        # Pointing gestures: only index finger extended
+        index_extended_alone = (
+            index_tip.y < index_mcp.y and
+            middle_tip.y > middle_mcp.y and
+            ring_tip.y > ring_mcp.y and
+            pinky_tip.y > pinky_mcp.y
+        )
+        
+        if index_extended_alone:
+            # Determine direction based on where index finger is pointing
+            # Compare index tip position relative to wrist
+            horizontal_diff = index_tip.x - wrist.x
+            
+            # Pointing left: index finger is to the LEFT of wrist (from camera view)
+            # Note: In camera view, user's left is image right (mirrored)
+            if horizontal_diff > 0.1:  # Significant distance to the right in image = user pointing left
+                return "pointing_left"
+            # Pointing right: index finger is to the RIGHT of wrist (from camera view)
+            elif horizontal_diff < -0.1:  # Significant distance to the left in image = user pointing right
+                return "pointing_right"
+            else:
+                # Pointing straight up or ambiguous
+                return "pointing_up"
+        
+        # Now check open hand gestures
+        if fingers_extended:
+            # Calculate hand orientation - is it raised up?
+            # If wrist is significantly below middle fingertip, hand is raised
+            hand_raised = (wrist.y - middle_tip.y) > 0.1
+            
+            if hand_raised:
+                # Wave: open hand raised up
+                return "wave"
+            else:
+                # Open palm: open hand flat/forward (not raised)
+                return "open_palm"
         
         return "none"
 
@@ -132,6 +169,7 @@ class VideoPlayer:
     """Plays video clips with seamless looping"""
     
     def __init__(self, video_path):
+        self.video_path = video_path
         self.cap = cv2.VideoCapture(video_path)
         self.fps = self.cap.get(cv2.CAP_PROP_FPS)
         self.frame_delay = 1.0 / self.fps if self.fps > 0 else 1/30
@@ -139,6 +177,7 @@ class VideoPlayer:
         
         # Track video completion
         self.total_frames = int(self.cap.get(cv2.CAP_PROP_FRAME_COUNT))
+        self.current_frame = 0
         self.has_completed_cycle = False
         self.started_playing = False
         
@@ -160,9 +199,12 @@ class VideoPlayer:
         if not ret:
             # Video has completed one full cycle
             self.has_completed_cycle = True
+            self.current_frame = 0
             # Loop back to start
             self.cap.set(cv2.CAP_PROP_POS_FRAMES, 0)
             ret, frame = self.cap.read()
+        else:
+            self.current_frame += 1
         
         return frame if ret else None
     
@@ -171,11 +213,18 @@ class VideoPlayer:
         self.cap.set(cv2.CAP_PROP_POS_FRAMES, 0)
         self.has_completed_cycle = False
         self.started_playing = True
-        self.last_frame_time = 0  # Reset timing
+        self.current_frame = 0
+        self.last_frame_time = 0
     
     def has_finished(self):
         """Check if video has completed at least one full cycle"""
         return self.has_completed_cycle
+    
+    def get_progress(self):
+        """Get playback progress as percentage"""
+        if self.total_frames == 0:
+            return 0
+        return (self.current_frame / self.total_frames) * 100
     
     def release(self):
         self.cap.release()
@@ -187,13 +236,33 @@ class InteractivePortrait:
         self.clips_dir = clips_dir
         self.photo_name = photo_name
         
+        # Load all video clips first to get dimensions
+        self.clips = self._load_clips()
+        
+        # Get video dimensions from idle clip
+        idle_clip = self.clips["idle"]
+        video_width = int(idle_clip.cap.get(cv2.CAP_PROP_FRAME_WIDTH))
+        video_height = int(idle_clip.cap.get(cv2.CAP_PROP_FRAME_HEIGHT))
+        
+        # Calculate display size to maintain aspect ratio
+        max_dimension = 1080  # Max screen dimension
+        aspect_ratio = video_width / video_height
+        
+        if aspect_ratio > 1:  # Wider than tall
+            self.display_width = min(video_width, max_dimension)
+            self.display_height = int(self.display_width / aspect_ratio)
+        else:  # Taller than wide or square
+            self.display_height = min(video_height, max_dimension)
+            self.display_width = int(self.display_height * aspect_ratio)
+        
+        print(f"Video resolution: {video_width}x{video_height}")
+        print(f"Display size: {self.display_width}x{self.display_height}")
+        
         # Initialize pygame
         pygame.init()
-        self.screen = pygame.display.set_mode((DISPLAY_WIDTH, DISPLAY_HEIGHT))
+        self.screen = pygame.display.set_mode((self.display_width, self.display_height))
         pygame.display.set_caption(f"Interactive Portrait - {photo_name}")
         
-        # Load all video clips
-        self.clips = self._load_clips()
         self.current_clip_name = "idle"
         
         # Initialize webcam
@@ -206,12 +275,22 @@ class InteractivePortrait:
         
         # State
         self.running = True
-        self.show_webcam_preview = True
-        self.clip_locked = False  # Lock to prevent switching until clip finishes
+        self.show_webcam_preview = False  # OFF by default
+        self.show_ui = True  # Show gesture/clip info
+        self.clip_locked = False
+        self.fullscreen = False
+        
+        # Font for UI
+        self.font_large = pygame.font.Font(None, 48)
+        self.font_medium = pygame.font.Font(None, 36)
+        self.font_small = pygame.font.Font(None, 24)
         
     def _load_clips(self):
         """Load all video clips"""
         clips = {}
+        
+        print(f"\nLoading clips from: {self.clips_dir}")
+        print("="*60)
         
         for gesture, clip_name in GESTURE_MAP.items():
             video_path = os.path.join(
@@ -228,10 +307,11 @@ class InteractivePortrait:
         if "idle" not in clips:
             raise ValueError("idle clip is required but not found!")
         
+        print("="*60 + "\n")
         return clips
     
     def switch_clip(self, new_clip_name):
-        """Switch to a different clip - only if current clip has finished or switching to idle"""
+        """Switch to a different clip"""
         if new_clip_name not in self.clips:
             return
         
@@ -251,7 +331,7 @@ class InteractivePortrait:
         current_clip = self.clips[self.current_clip_name]
         
         # Allow switching if:
-        # 1. Current clip is idle (always allow switching from idle)
+        # 1. Current clip is idle
         # 2. Current clip has finished one complete cycle
         can_switch = (
             self.current_clip_name == "idle" or
@@ -261,23 +341,95 @@ class InteractivePortrait:
         if can_switch:
             self.current_clip_name = new_clip_name
             self.clips[new_clip_name].reset()
-            self.clip_locked = True  # Lock the new clip until it finishes
+            self.clip_locked = True
             print(f"→ Switched to: {new_clip_name}")
+    
+    def draw_ui(self, gesture, webcam_frame):
+        """Draw UI overlay with gesture and clip info"""
+        if not self.show_ui:
+            return
+        
+        # Create semi-transparent overlay
+        overlay = pygame.Surface((self.display_width, 100))
+        overlay.set_alpha(180)
+        overlay.fill(COLOR_BLACK)
+        
+        # Draw current clip name
+        clip_text = self.font_medium.render(
+            f"Clip: {self.current_clip_name}", 
+            True, 
+            COLOR_GREEN if self.current_clip_name != "idle" else COLOR_WHITE
+        )
+        overlay.blit(clip_text, (10, 10))
+        
+        # Draw detected gesture
+        gesture_color = COLOR_YELLOW if gesture != "none" else COLOR_WHITE
+        gesture_text = self.font_medium.render(
+            f"Gesture: {gesture}", 
+            True, 
+            gesture_color
+        )
+        overlay.blit(gesture_text, (10, 50))
+        
+        # Draw progress bar if not idle
+        if self.current_clip_name != "idle":
+            progress = self.clips[self.current_clip_name].get_progress()
+            bar_width = 200
+            bar_height = 10
+            bar_x = self.display_width - bar_width - 10
+            bar_y = 45
+            
+            # Background
+            pygame.draw.rect(overlay, COLOR_WHITE, (bar_x, bar_y, bar_width, bar_height), 2)
+            # Progress
+            pygame.draw.rect(overlay, COLOR_BLUE, (bar_x, bar_y, int(bar_width * progress / 100), bar_height))
+        
+        self.screen.blit(overlay, (0, 0))
+        
+        # Draw webcam preview if enabled
+        if self.show_webcam_preview and webcam_frame is not None:
+            webcam_small = cv2.resize(
+                webcam_frame, 
+                (WEBCAM_PREVIEW_SIZE, int(WEBCAM_PREVIEW_SIZE * 0.75))
+            )
+            webcam_small = cv2.cvtColor(webcam_small, cv2.COLOR_BGR2RGB)
+            webcam_surface = pygame.surfarray.make_surface(
+                webcam_small.swapaxes(0, 1)
+            )
+            
+            # Position in bottom-right corner
+            self.screen.blit(
+                webcam_surface, 
+                (self.display_width - WEBCAM_PREVIEW_SIZE - 10, 
+                 self.display_height - int(WEBCAM_PREVIEW_SIZE * 0.75) - 10)
+            )
+    
+    def toggle_fullscreen(self):
+        """Toggle fullscreen mode"""
+        self.fullscreen = not self.fullscreen
+        if self.fullscreen:
+            self.screen = pygame.display.set_mode((0, 0), pygame.FULLSCREEN)
+        else:
+            self.screen = pygame.display.set_mode((self.display_width, self.display_height))
     
     def run(self):
         """Main loop"""
         clock = pygame.time.Clock()
+        last_triggered_gesture = "none"
         
         print("\n" + "="*60)
         print("INTERACTIVE PORTRAIT RUNNING")
         print("="*60)
-        print("Controls:")
-        print("  Thumbs up → Smile")
-        print("  Wave → Sup dude")
-        print("  Pointing up → Look left")
-        print("  Open palm → Look right")
-        print("  Press 'W' to toggle webcam preview")
-        print("  Press 'Q' or ESC to quit")
+        print("Gestures (trigger once, animation plays to completion):")
+        print("  👍 Thumbs up → Smile")
+        print("  👋 Wave (raised hand) → Sup dude")
+        print("  👈 Point left → Look left")
+        print("  👉 Point right → Look right")
+        print("\nControls:")
+        print("  W → Toggle webcam preview")
+        print("  U → Toggle UI overlay")
+        print("  F → Toggle fullscreen")
+        print("  Q/ESC → Quit")
         print("="*60 + "\n")
         
         while self.running:
@@ -290,6 +442,13 @@ class InteractivePortrait:
                         self.running = False
                     elif event.key == pygame.K_w:
                         self.show_webcam_preview = not self.show_webcam_preview
+                        print(f"Webcam preview: {'ON' if self.show_webcam_preview else 'OFF'}")
+                    elif event.key == pygame.K_u:
+                        self.show_ui = not self.show_ui
+                        print(f"UI overlay: {'ON' if self.show_ui else 'OFF'}")
+                    elif event.key == pygame.K_f:
+                        self.toggle_fullscreen()
+                        print(f"Fullscreen: {'ON' if self.fullscreen else 'OFF'}")
             
             # Capture webcam frame
             ret, webcam_frame = self.webcam.read()
@@ -299,26 +458,35 @@ class InteractivePortrait:
             # Detect gesture
             gesture = self.gesture_detector.detect(webcam_frame)
             
-            # Map gesture to clip
-            target_clip = GESTURE_MAP.get(gesture, "idle")
+            # Only trigger new animation if:
+            # 1. A gesture is detected (not "none")
+            # 2. It's different from the last triggered gesture (prevents re-triggering)
+            # 3. We're not currently locked in an animation OR we're in idle
+            if gesture != "none" and gesture != last_triggered_gesture:
+                if not self.clip_locked or self.current_clip_name == "idle":
+                    target_clip = GESTURE_MAP.get(gesture, "idle")
+                    self.switch_clip(target_clip)
+                    last_triggered_gesture = gesture
             
-            # Try to switch clip (switch_clip will check if switching is allowed)
-            self.switch_clip(target_clip)
+            # Reset last triggered gesture when hand is removed
+            if gesture == "none":
+                last_triggered_gesture = "none"
+            
+            # Check if current clip has finished
+            if self.clip_locked and self.current_clip_name != "idle":
+                if self.clips[self.current_clip_name].has_finished():
+                    # Animation finished, return to idle
+                    self.clip_locked = False
+                    self.switch_clip("idle")
             
             # Get current portrait frame
             portrait_frame = self.clips[self.current_clip_name].get_frame()
             
-            # Check if current clip has finished (for non-idle clips)
-            # This unlocks the clip so a new gesture can trigger a switch
-            if self.clip_locked and self.current_clip_name != "idle":
-                if self.clips[self.current_clip_name].has_finished():
-                    self.clip_locked = False  # Unlock to allow next switch
-            
             if portrait_frame is not None:
-                # Resize to display size
+                # Resize to display size maintaining aspect ratio
                 portrait_frame = cv2.resize(
                     portrait_frame, 
-                    (DISPLAY_WIDTH, DISPLAY_HEIGHT)
+                    (self.display_width, self.display_height)
                 )
                 
                 # Convert BGR to RGB for pygame
@@ -332,29 +500,8 @@ class InteractivePortrait:
                 # Display portrait
                 self.screen.blit(portrait_frame, (0, 0))
                 
-                # Overlay webcam preview in corner
-                if self.show_webcam_preview:
-                    webcam_small = cv2.resize(
-                        webcam_frame, 
-                        (WEBCAM_PREVIEW_SIZE, int(WEBCAM_PREVIEW_SIZE * 0.75))
-                    )
-                    webcam_small = cv2.cvtColor(webcam_small, cv2.COLOR_BGR2RGB)
-                    webcam_surface = pygame.surfarray.make_surface(
-                        webcam_small.swapaxes(0, 1)
-                    )
-                    self.screen.blit(
-                        webcam_surface, 
-                        (DISPLAY_WIDTH - WEBCAM_PREVIEW_SIZE - 10, 10)
-                    )
-                    
-                    # Show current gesture text
-                    font = pygame.font.Font(None, 36)
-                    text = font.render(
-                        f"Gesture: {gesture}", 
-                        True, 
-                        (255, 255, 255)
-                    )
-                    self.screen.blit(text, (10, 10))
+                # Draw UI overlay
+                self.draw_ui(gesture, webcam_frame)
                 
                 pygame.display.flip()
             
