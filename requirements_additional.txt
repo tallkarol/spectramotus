@@ -1,0 +1,14 @@
+# Additional dependencies not in base requirements
+# Install these after installing requirements_base.txt and requirements.txt/requirements_macOS.txt
+
+# Background removal
+rembg
+
+# Hand gesture detection
+mediapipe
+
+# Interactive display
+pygame
+
+# Environment variable management
+python-dotenv
