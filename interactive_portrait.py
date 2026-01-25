@@ -1,14 +1,10 @@
 #!/usr/bin/env python3
 """
-Spectramotus Interactive Portrait Player - Fixed Version
-Plays LivePortrait clips based on MediaPipe gesture detection
+Spectramotus Interactive Portrait Player - Layered Version
+Composites person animations over background with dynamic effects
 
-Improvements:
-- Dynamic aspect ratio display
-- Fixed gesture mapping (only uses gestures that actually work)
-- Webcam preview off by default
-- Better visual feedback
-- Cleaner code structure
+Usage:
+    python interactive_portrait_layered.py prepared-photos/karol-photo
 """
 
 import cv2
@@ -16,19 +12,19 @@ import mediapipe as mp
 import pygame
 import sys
 import os
+import json
+import math
 from pathlib import Path
 import time
+import numpy as np
+import argparse
 
-# Configuration
-PHOTO_NAME = "karol-photo"
-CLIPS_DIR = f"generated_clips/{PHOTO_NAME}"
-
-# Display settings (will be calculated dynamically)
+# Display settings (calculated dynamically)
 DISPLAY_WIDTH = None
 DISPLAY_HEIGHT = None
 WEBCAM_PREVIEW_SIZE = 200
 
-# Gesture to clip mapping - ONLY gestures that actually work
+# Gesture to clip mapping
 GESTURE_MAP = {
     "thumbs_up": "smile",
     "wave": "sup_dude",
@@ -58,14 +54,13 @@ class GestureDetector:
         )
         self.mp_drawing = mp.solutions.drawing_utils
         
-        # Gesture state tracking for debouncing
+        # Gesture state tracking
         self.current_gesture = "none"
         self.gesture_frames = 0
-        self.required_frames = 3  # Must see gesture for 3 frames
+        self.required_frames = 3
         
     def detect(self, frame):
-        """Detect gesture in frame, returns gesture name"""
-        # Convert BGR to RGB
+        """Detect gesture in frame"""
         rgb_frame = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
         results = self.hands.process(rgb_frame)
         
@@ -73,23 +68,18 @@ class GestureDetector:
         
         if results.multi_hand_landmarks:
             hand_landmarks = results.multi_hand_landmarks[0]
-            
-            # Draw landmarks on frame (for debugging)
             self.mp_drawing.draw_landmarks(
                 frame, hand_landmarks, self.mp_hands.HAND_CONNECTIONS
             )
-            
-            # Detect specific gestures based on landmark positions
             detected = self._classify_gesture(hand_landmarks)
         
-        # Debouncing: require gesture to be stable for multiple frames
+        # Debouncing
         if detected == self.current_gesture:
             self.gesture_frames += 1
         else:
             self.current_gesture = detected
             self.gesture_frames = 1
         
-        # Only return gesture if it's been stable
         if self.gesture_frames >= self.required_frames:
             return self.current_gesture
         else:
@@ -97,7 +87,6 @@ class GestureDetector:
     
     def _classify_gesture(self, landmarks):
         """Classify hand pose into gesture"""
-        # Get landmark positions
         thumb_tip = landmarks.landmark[4]
         index_tip = landmarks.landmark[8]
         middle_tip = landmarks.landmark[12]
@@ -105,13 +94,11 @@ class GestureDetector:
         pinky_tip = landmarks.landmark[20]
         wrist = landmarks.landmark[0]
         
-        # Get finger base positions (MCP joints)
         index_mcp = landmarks.landmark[5]
         middle_mcp = landmarks.landmark[9]
         ring_mcp = landmarks.landmark[13]
         pinky_mcp = landmarks.landmark[17]
         
-        # Check if fingers are extended
         fingers_extended = (
             index_tip.y < index_mcp.y and
             middle_tip.y < middle_mcp.y and
@@ -119,14 +106,14 @@ class GestureDetector:
             pinky_tip.y < pinky_mcp.y
         )
         
-        # Thumbs up: thumb extended upward, other fingers curled
+        # Thumbs up
         if (thumb_tip.y < index_mcp.y and 
             index_tip.y > index_mcp.y and
             middle_tip.y > middle_mcp.y and
             ring_tip.y > ring_mcp.y):
             return "thumbs_up"
         
-        # Pointing gestures: only index finger extended
+        # Pointing gestures
         index_extended_alone = (
             index_tip.y < index_mcp.y and
             middle_tip.y > middle_mcp.y and
@@ -135,38 +122,26 @@ class GestureDetector:
         )
         
         if index_extended_alone:
-            # Determine direction based on where index finger is pointing
-            # Compare index tip position relative to wrist
             horizontal_diff = index_tip.x - wrist.x
-            
-            # Pointing left: index finger is to the LEFT of wrist (from camera view)
-            # Note: In camera view, user's left is image right (mirrored)
-            if horizontal_diff > 0.1:  # Significant distance to the right in image = user pointing left
+            if horizontal_diff > 0.1:
                 return "pointing_left"
-            # Pointing right: index finger is to the RIGHT of wrist (from camera view)
-            elif horizontal_diff < -0.1:  # Significant distance to the left in image = user pointing right
+            elif horizontal_diff < -0.1:
                 return "pointing_right"
             else:
-                # Pointing straight up or ambiguous
                 return "pointing_up"
         
-        # Now check open hand gestures
+        # Wave vs open palm
         if fingers_extended:
-            # Calculate hand orientation - is it raised up?
-            # If wrist is significantly below middle fingertip, hand is raised
             hand_raised = (wrist.y - middle_tip.y) > 0.1
-            
             if hand_raised:
-                # Wave: open hand raised up
                 return "wave"
             else:
-                # Open palm: open hand flat/forward (not raised)
                 return "open_palm"
         
         return "none"
 
 class VideoPlayer:
-    """Plays video clips with seamless looping"""
+    """Plays video clips with alpha channel support"""
     
     def __init__(self, video_path):
         self.video_path = video_path
@@ -175,32 +150,26 @@ class VideoPlayer:
         self.frame_delay = 1.0 / self.fps if self.fps > 0 else 1/30
         self.last_frame_time = 0
         
-        # Track video completion
         self.total_frames = int(self.cap.get(cv2.CAP_PROP_FRAME_COUNT))
         self.current_frame = 0
         self.has_completed_cycle = False
-        self.started_playing = False
         
         if not self.cap.isOpened():
             raise ValueError(f"Could not open video: {video_path}")
     
     def get_frame(self):
-        """Get current frame, loop if at end"""
+        """Get current frame"""
         current_time = time.time()
         
-        # Respect frame timing
         if current_time - self.last_frame_time < self.frame_delay:
             return None
         
         self.last_frame_time = current_time
-        
         ret, frame = self.cap.read()
         
         if not ret:
-            # Video has completed one full cycle
             self.has_completed_cycle = True
             self.current_frame = 0
-            # Loop back to start
             self.cap.set(cv2.CAP_PROP_POS_FRAMES, 0)
             ret, frame = self.cap.read()
         else:
@@ -212,16 +181,15 @@ class VideoPlayer:
         """Reset to beginning"""
         self.cap.set(cv2.CAP_PROP_POS_FRAMES, 0)
         self.has_completed_cycle = False
-        self.started_playing = True
         self.current_frame = 0
         self.last_frame_time = 0
     
     def has_finished(self):
-        """Check if video has completed at least one full cycle"""
+        """Check if completed one cycle"""
         return self.has_completed_cycle
     
     def get_progress(self):
-        """Get playback progress as percentage"""
+        """Get progress percentage"""
         if self.total_frames == 0:
             return 0
         return (self.current_frame / self.total_frames) * 100
@@ -229,39 +197,182 @@ class VideoPlayer:
     def release(self):
         self.cap.release()
 
-class InteractivePortrait:
-    """Main application"""
+class BackgroundEffects:
+    """Handles background animation effects"""
     
-    def __init__(self, clips_dir, photo_name):
-        self.clips_dir = clips_dir
-        self.photo_name = photo_name
+    def __init__(self, background_image):
+        self.original_bg = background_image.copy()
+        self.height, self.width = background_image.shape[:2]
         
-        # Load all video clips first to get dimensions
-        self.clips = self._load_clips()
+        # Effect parameters
+        self.time = 0
+        self.breathing_speed = 0.5  # Cycles per second
+        self.breathing_amplitude = 0.02  # 2% zoom
+        self.parallax_amplitude = 5  # Pixels
         
-        # Get video dimensions from idle clip
-        idle_clip = self.clips["idle"]
-        video_width = int(idle_clip.cap.get(cv2.CAP_PROP_FRAME_WIDTH))
-        video_height = int(idle_clip.cap.get(cv2.CAP_PROP_FRAME_HEIGHT))
+        # Time of day effect
+        self.time_of_day_cycle = 60.0  # Seconds for full day cycle
         
-        # Calculate display size to maintain aspect ratio
-        max_dimension = 1080  # Max screen dimension
-        aspect_ratio = video_width / video_height
+    def apply_effects(self, effect_list):
+        """Apply selected effects to background"""
+        result = self.original_bg.copy()
+        self.time += 1/30  # Assuming 30 FPS
         
-        if aspect_ratio > 1:  # Wider than tall
-            self.display_width = min(video_width, max_dimension)
+        if "breathing" in effect_list:
+            result = self._apply_breathing(result)
+        
+        if "parallax" in effect_list:
+            result = self._apply_parallax(result)
+        
+        if "time_of_day" in effect_list:
+            result = self._apply_time_of_day(result)
+        
+        return result
+    
+    def _apply_breathing(self, image):
+        """Subtle zoom in/out effect"""
+        # Calculate scale factor (oscillates between 1.0 - amplitude and 1.0 + amplitude)
+        scale = 1.0 + self.breathing_amplitude * math.sin(2 * math.pi * self.breathing_speed * self.time)
+        
+        # Calculate new dimensions
+        new_width = int(self.width * scale)
+        new_height = int(self.height * scale)
+        
+        # Resize
+        resized = cv2.resize(image, (new_width, new_height))
+        
+        # Crop to original size (center crop)
+        start_x = (new_width - self.width) // 2
+        start_y = (new_height - self.height) // 2
+        
+        if scale > 1.0:
+            # Zoomed in - crop
+            result = resized[start_y:start_y+self.height, start_x:start_x+self.width]
+        else:
+            # Zoomed out - would need padding, just return original for now
+            result = image
+        
+        return result
+    
+    def _apply_parallax(self, image):
+        """Subtle horizontal/vertical shift"""
+        # Calculate offset (oscillates)
+        offset_x = int(self.parallax_amplitude * math.sin(2 * math.pi * 0.3 * self.time))
+        offset_y = int(self.parallax_amplitude * 0.5 * math.cos(2 * math.pi * 0.2 * self.time))
+        
+        # Create translation matrix
+        M = np.float32([[1, 0, offset_x], [0, 1, offset_y]])
+        
+        # Apply translation
+        result = cv2.warpAffine(image, M, (self.width, self.height), borderMode=cv2.BORDER_REPLICATE)
+        
+        return result
+    
+    def _apply_time_of_day(self, image):
+        """Simulate time of day lighting changes"""
+        # Calculate time of day (0 to 1, where 0.5 is noon)
+        time_of_day = (self.time % self.time_of_day_cycle) / self.time_of_day_cycle
+        
+        # Calculate brightness factor (brightest at 0.5, darkest at 0 and 1)
+        brightness = 0.8 + 0.2 * math.sin(2 * math.pi * time_of_day)
+        
+        # Calculate color temperature (warmer at dawn/dusk, cooler at noon)
+        # More blue at noon, more orange at dawn/dusk
+        temp = abs(time_of_day - 0.5) * 2  # 0 at noon, 1 at midnight
+        
+        # Apply brightness
+        result = cv2.convertScaleAbs(image, alpha=brightness, beta=0)
+        
+        # Apply subtle color temperature shift
+        if temp > 0.5:  # Dawn/dusk - warmer
+            result[:, :, 2] = cv2.convertScaleAbs(result[:, :, 2], alpha=1.1, beta=0)  # More red
+            result[:, :, 0] = cv2.convertScaleAbs(result[:, :, 0], alpha=0.9, beta=0)  # Less blue
+        
+        return result
+
+class LayeredPortrait:
+    """Main application with layered compositing"""
+    
+    def __init__(self, prepared_photo_dir):
+        self.prepared_photo_dir = prepared_photo_dir
+        self.photo_name = Path(prepared_photo_dir).name
+        
+        # Load metadata
+        metadata_path = os.path.join(prepared_photo_dir, "metadata.json")
+        if os.path.exists(metadata_path):
+            with open(metadata_path, 'r') as f:
+                self.metadata = json.load(f)
+        else:
+            self.metadata = {"animations": {"background_effects": []}}
+        
+        # Load background
+        background_path = os.path.join(prepared_photo_dir, "background.png")
+        if not os.path.exists(background_path):
+            raise ValueError(f"Background not found: {background_path}")
+        
+        self.background_image = cv2.imread(background_path)
+        self.bg_height, self.bg_width = self.background_image.shape[:2]
+        
+        # Load mask for compositing
+        mask_path = os.path.join(prepared_photo_dir, "mask.png")
+        if os.path.exists(mask_path):
+            mask_image = cv2.imread(mask_path, cv2.IMREAD_GRAYSCALE)
+            if mask_image is None:
+                raise ValueError(f"Could not load mask: {mask_path}")
+            # Store original mask dimensions
+            self.mask_height, self.mask_width = mask_image.shape[:2]
+            self.original_mask = mask_image
+            print(f"Loaded mask: {self.mask_width}x{self.mask_height}")
+        else:
+            print(f"Warning: Mask not found at {mask_path}, using fallback threshold method")
+            self.original_mask = None
+        
+        # Initialize background effects
+        self.background_effects = BackgroundEffects(self.background_image)
+        
+        # Load person clips
+        clips_dir = f"generated_clips/{self.photo_name}"
+        if not os.path.exists(clips_dir):
+            raise ValueError(f"Clips directory not found: {clips_dir}\nRun batch_generate_v2.py first!")
+        
+        self.clips = self._load_clips(clips_dir)
+        
+        # Calculate display size
+        max_dimension = 1080
+        aspect_ratio = self.bg_width / self.bg_height
+        
+        if aspect_ratio > 1:
+            self.display_width = min(self.bg_width, max_dimension)
             self.display_height = int(self.display_width / aspect_ratio)
-        else:  # Taller than wide or square
-            self.display_height = min(video_height, max_dimension)
+        else:
+            self.display_height = min(self.bg_height, max_dimension)
             self.display_width = int(self.display_height * aspect_ratio)
         
-        print(f"Video resolution: {video_width}x{video_height}")
+        print(f"Background resolution: {self.bg_width}x{self.bg_height}")
         print(f"Display size: {self.display_width}x{self.display_height}")
+        
+        # Pre-resize mask to display size for efficient compositing
+        if self.original_mask is not None:
+            self.display_mask = cv2.resize(
+                self.original_mask,
+                (self.display_width, self.display_height),
+                interpolation=cv2.INTER_LINEAR
+            )
+            # Apply slight Gaussian blur to smooth edges and reduce meshing artifacts
+            # This creates a soft feather at the edges for better blending
+            self.display_mask = cv2.GaussianBlur(self.display_mask, (5, 5), 1.0)
+            # Normalize mask to 0.0-1.0 range (255 = person, 0 = background)
+            self.display_mask_float = (self.display_mask.astype(float) / 255.0)
+            # Expand to 3 channels for BGR compositing
+            self.display_mask_3d = np.stack([self.display_mask_float] * 3, axis=2)
+            print(f"Pre-computed mask for display size (with edge smoothing)")
+        else:
+            self.display_mask_3d = None
         
         # Initialize pygame
         pygame.init()
         self.screen = pygame.display.set_mode((self.display_width, self.display_height))
-        pygame.display.set_caption(f"Interactive Portrait - {photo_name}")
+        pygame.display.set_caption(f"Layered Portrait - {self.photo_name}")
         
         self.current_clip_name = "idle"
         
@@ -275,27 +386,30 @@ class InteractivePortrait:
         
         # State
         self.running = True
-        self.show_webcam_preview = False  # OFF by default
-        self.show_ui = True  # Show gesture/clip info
+        self.show_webcam_preview = False
+        self.show_ui = True
         self.clip_locked = False
         self.fullscreen = False
         
-        # Font for UI
+        # Background effects
+        self.effects_enabled = self.metadata.get("animations", {}).get("background_effects", [])
+        
+        # Fonts
         self.font_large = pygame.font.Font(None, 48)
         self.font_medium = pygame.font.Font(None, 36)
         self.font_small = pygame.font.Font(None, 24)
         
-    def _load_clips(self):
+    def _load_clips(self, clips_dir):
         """Load all video clips"""
         clips = {}
         
-        print(f"\nLoading clips from: {self.clips_dir}")
+        print(f"\nLoading clips from: {clips_dir}")
         print("="*60)
         
         for gesture, clip_name in GESTURE_MAP.items():
             video_path = os.path.join(
-                self.clips_dir, 
-                f"{self.photo_name}_{clip_name}.mp4"
+                clips_dir,
+                f"{self.photo_name}_{clip_name}_person.mp4"
             )
             
             if os.path.exists(video_path):
@@ -305,21 +419,48 @@ class InteractivePortrait:
                 print(f"✗ Missing: {video_path}")
         
         if "idle" not in clips:
-            raise ValueError("idle clip is required but not found!")
+            raise ValueError("idle clip is required!")
         
         print("="*60 + "\n")
         return clips
     
+    def composite_frame(self, background, person_frame):
+        """Composite person frame over background using chroma key detection"""
+        
+        # Resize both to display size
+        bg_resized = cv2.resize(background, (self.display_width, self.display_height))
+        person_resized = cv2.resize(person_frame, (self.display_width, self.display_height))
+        
+        # CHROMA KEY APPROACH: Videos have green (0, 255, 0) backgrounds.
+        # Green is never present in person pixels, so we can reliably detect it.
+        # This solves the black background vs dark person pixels problem.
+        
+        # Split into channels (BGR format)
+        b, g, r = cv2.split(person_resized)
+        
+        # Detect chroma key green: high green, low red and blue
+        # Allow some tolerance for video compression artifacts
+        is_chroma_key = (g > 200) & (b < 50) & (r < 50)
+        
+        # Create alpha mask: 1.0 = person (keep), 0.0 = background (transparent)
+        alpha = (~is_chroma_key).astype(float)
+        
+        # Apply slight blur to smooth edges and reduce harsh transitions
+        alpha = cv2.GaussianBlur(alpha, (5, 5), 1.0)
+        
+        # Expand to 3 channels
+        alpha_3d = np.stack([alpha] * 3, axis=2)
+        
+        # Composite: person where alpha=1.0, background where alpha=0.0
+        result = (person_resized * alpha_3d + bg_resized * (1 - alpha_3d)).astype(np.uint8)
+        
+        return result
+    
     def switch_clip(self, new_clip_name):
-        """Switch to a different clip"""
-        if new_clip_name not in self.clips:
+        """Switch to different clip"""
+        if new_clip_name not in self.clips or new_clip_name == self.current_clip_name:
             return
         
-        # Don't switch if it's the same clip
-        if new_clip_name == self.current_clip_name:
-            return
-        
-        # Always allow switching to idle
         if new_clip_name == "idle":
             self.current_clip_name = new_clip_name
             self.clips[new_clip_name].reset()
@@ -327,16 +468,8 @@ class InteractivePortrait:
             print(f"→ Switched to: {new_clip_name}")
             return
         
-        # For non-idle clips, check if we can switch
         current_clip = self.clips[self.current_clip_name]
-        
-        # Allow switching if:
-        # 1. Current clip is idle
-        # 2. Current clip has finished one complete cycle
-        can_switch = (
-            self.current_clip_name == "idle" or
-            current_clip.has_finished()
-        )
+        can_switch = (self.current_clip_name == "idle" or current_clip.has_finished())
         
         if can_switch:
             self.current_clip_name = new_clip_name
@@ -345,62 +478,60 @@ class InteractivePortrait:
             print(f"→ Switched to: {new_clip_name}")
     
     def draw_ui(self, gesture, webcam_frame):
-        """Draw UI overlay with gesture and clip info"""
+        """Draw UI overlay"""
         if not self.show_ui:
             return
         
-        # Create semi-transparent overlay
-        overlay = pygame.Surface((self.display_width, 100))
+        overlay = pygame.Surface((self.display_width, 120))
         overlay.set_alpha(180)
         overlay.fill(COLOR_BLACK)
         
-        # Draw current clip name
         clip_text = self.font_medium.render(
-            f"Clip: {self.current_clip_name}", 
-            True, 
+            f"Clip: {self.current_clip_name}",
+            True,
             COLOR_GREEN if self.current_clip_name != "idle" else COLOR_WHITE
         )
         overlay.blit(clip_text, (10, 10))
         
-        # Draw detected gesture
         gesture_color = COLOR_YELLOW if gesture != "none" else COLOR_WHITE
         gesture_text = self.font_medium.render(
-            f"Gesture: {gesture}", 
-            True, 
+            f"Gesture: {gesture}",
+            True,
             gesture_color
         )
         overlay.blit(gesture_text, (10, 50))
         
-        # Draw progress bar if not idle
+        # Show active effects
+        effects_text = self.font_small.render(
+            f"Effects: {', '.join(self.effects_enabled)}",
+            True,
+            COLOR_BLUE
+        )
+        overlay.blit(effects_text, (10, 90))
+        
         if self.current_clip_name != "idle":
             progress = self.clips[self.current_clip_name].get_progress()
             bar_width = 200
             bar_height = 10
             bar_x = self.display_width - bar_width - 10
-            bar_y = 45
+            bar_y = 55
             
-            # Background
             pygame.draw.rect(overlay, COLOR_WHITE, (bar_x, bar_y, bar_width, bar_height), 2)
-            # Progress
             pygame.draw.rect(overlay, COLOR_BLUE, (bar_x, bar_y, int(bar_width * progress / 100), bar_height))
         
         self.screen.blit(overlay, (0, 0))
         
-        # Draw webcam preview if enabled
         if self.show_webcam_preview and webcam_frame is not None:
             webcam_small = cv2.resize(
-                webcam_frame, 
+                webcam_frame,
                 (WEBCAM_PREVIEW_SIZE, int(WEBCAM_PREVIEW_SIZE * 0.75))
             )
             webcam_small = cv2.cvtColor(webcam_small, cv2.COLOR_BGR2RGB)
-            webcam_surface = pygame.surfarray.make_surface(
-                webcam_small.swapaxes(0, 1)
-            )
+            webcam_surface = pygame.surfarray.make_surface(webcam_small.swapaxes(0, 1))
             
-            # Position in bottom-right corner
             self.screen.blit(
-                webcam_surface, 
-                (self.display_width - WEBCAM_PREVIEW_SIZE - 10, 
+                webcam_surface,
+                (self.display_width - WEBCAM_PREVIEW_SIZE - 10,
                  self.display_height - int(WEBCAM_PREVIEW_SIZE * 0.75) - 10)
             )
     
@@ -418,13 +549,14 @@ class InteractivePortrait:
         last_triggered_gesture = "none"
         
         print("\n" + "="*60)
-        print("INTERACTIVE PORTRAIT RUNNING")
+        print("LAYERED INTERACTIVE PORTRAIT RUNNING")
         print("="*60)
         print("Gestures (trigger once, animation plays to completion):")
         print("  👍 Thumbs up → Smile")
-        print("  👋 Wave (raised hand) → Sup dude")
+        print("  👋 Wave → Sup dude")
         print("  👈 Point left → Look left")
         print("  👉 Point right → Look right")
+        print(f"\nBackground effects: {', '.join(self.effects_enabled)}")
         print("\nControls:")
         print("  W → Toggle webcam preview")
         print("  U → Toggle UI overlay")
@@ -433,7 +565,6 @@ class InteractivePortrait:
         print("="*60 + "\n")
         
         while self.running:
-            # Handle events
             for event in pygame.event.get():
                 if event.type == pygame.QUIT:
                     self.running = False
@@ -442,70 +573,50 @@ class InteractivePortrait:
                         self.running = False
                     elif event.key == pygame.K_w:
                         self.show_webcam_preview = not self.show_webcam_preview
-                        print(f"Webcam preview: {'ON' if self.show_webcam_preview else 'OFF'}")
                     elif event.key == pygame.K_u:
                         self.show_ui = not self.show_ui
-                        print(f"UI overlay: {'ON' if self.show_ui else 'OFF'}")
                     elif event.key == pygame.K_f:
                         self.toggle_fullscreen()
-                        print(f"Fullscreen: {'ON' if self.fullscreen else 'OFF'}")
             
-            # Capture webcam frame
             ret, webcam_frame = self.webcam.read()
             if not ret:
                 continue
             
-            # Detect gesture
             gesture = self.gesture_detector.detect(webcam_frame)
             
-            # Only trigger new animation if:
-            # 1. A gesture is detected (not "none")
-            # 2. It's different from the last triggered gesture (prevents re-triggering)
-            # 3. We're not currently locked in an animation OR we're in idle
             if gesture != "none" and gesture != last_triggered_gesture:
                 if not self.clip_locked or self.current_clip_name == "idle":
                     target_clip = GESTURE_MAP.get(gesture, "idle")
                     self.switch_clip(target_clip)
                     last_triggered_gesture = gesture
             
-            # Reset last triggered gesture when hand is removed
             if gesture == "none":
                 last_triggered_gesture = "none"
             
-            # Check if current clip has finished
             if self.clip_locked and self.current_clip_name != "idle":
                 if self.clips[self.current_clip_name].has_finished():
-                    # Animation finished, return to idle
                     self.clip_locked = False
                     self.switch_clip("idle")
             
-            # Get current portrait frame
-            portrait_frame = self.clips[self.current_clip_name].get_frame()
+            # Get animated background
+            background = self.background_effects.apply_effects(self.effects_enabled)
             
-            if portrait_frame is not None:
-                # Resize to display size maintaining aspect ratio
-                portrait_frame = cv2.resize(
-                    portrait_frame, 
-                    (self.display_width, self.display_height)
-                )
+            # Get person frame
+            person_frame = self.clips[self.current_clip_name].get_frame()
+            
+            if person_frame is not None:
+                # Composite layers
+                composited = self.composite_frame(background, person_frame)
                 
-                # Convert BGR to RGB for pygame
-                portrait_frame = cv2.cvtColor(portrait_frame, cv2.COLOR_BGR2RGB)
+                # Convert to pygame
+                composited_rgb = cv2.cvtColor(composited, cv2.COLOR_BGR2RGB)
+                composited_surface = pygame.surfarray.make_surface(composited_rgb.swapaxes(0, 1))
                 
-                # Rotate for pygame (OpenCV uses different coordinate system)
-                portrait_frame = pygame.surfarray.make_surface(
-                    portrait_frame.swapaxes(0, 1)
-                )
-                
-                # Display portrait
-                self.screen.blit(portrait_frame, (0, 0))
-                
-                # Draw UI overlay
+                self.screen.blit(composited_surface, (0, 0))
                 self.draw_ui(gesture, webcam_frame)
-                
                 pygame.display.flip()
             
-            clock.tick(30)  # 30 FPS
+            clock.tick(30)
         
         self.cleanup()
     
@@ -519,12 +630,22 @@ class InteractivePortrait:
         print("Goodbye!")
 
 def main():
-    if not os.path.exists(CLIPS_DIR):
-        print(f"ERROR: Clips directory not found: {CLIPS_DIR}")
-        print("Run batch_generate.py first to create clips!")
+    parser = argparse.ArgumentParser(
+        description="Run interactive layered portrait"
+    )
+    parser.add_argument(
+        "prepared_photo_dir",
+        help="Path to prepared photo directory (e.g., prepared-photos/karol-photo)"
+    )
+    
+    args = parser.parse_args()
+    
+    if not os.path.exists(args.prepared_photo_dir):
+        print(f"ERROR: Prepared photo directory not found: {args.prepared_photo_dir}")
+        print("Run prepare_photo.py first!")
         sys.exit(1)
     
-    app = InteractivePortrait(CLIPS_DIR, PHOTO_NAME)
+    app = LayeredPortrait(args.prepared_photo_dir)
     app.run()
 
 if __name__ == "__main__":

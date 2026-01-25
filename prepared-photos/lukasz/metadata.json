@@ -1,0 +1,61 @@
+{
+  "source": "source-photos/lukasz.jpeg",
+  "photo_name": "lukasz",
+  "dimensions": {
+    "width": 1908,
+    "height": 3392
+  },
+  "aspect_ratio": 0.5625,
+  "prepared_at": "2026-01-25T00:36:30.731156",
+  "layers": {
+    "person": "person.png",
+    "background": "background.png",
+    "mask": "mask.png",
+    "depth": "depth.png"
+  },
+  "animations": {
+    "background_effects": [
+      "parallax",
+      "time_of_day"
+    ],
+    "person_clips": [
+      "idle",
+      "look_left",
+      "look_right",
+      "smile",
+      "sup_dude"
+    ]
+  },
+  "clips": [
+    {
+      "name": "idle",
+      "type": "person_layer",
+      "file": "lukasz_idle_person.mp4",
+      "has_background": false
+    },
+    {
+      "name": "look_left",
+      "type": "person_layer",
+      "file": "lukasz_look_left_person.mp4",
+      "has_background": false
+    },
+    {
+      "name": "look_right",
+      "type": "person_layer",
+      "file": "lukasz_look_right_person.mp4",
+      "has_background": false
+    },
+    {
+      "name": "smile",
+      "type": "person_layer",
+      "file": "lukasz_smile_person.mp4",
+      "has_background": false
+    },
+    {
+      "name": "sup_dude",
+      "type": "person_layer",
+      "file": "lukasz_sup_dude_person.mp4",
+      "has_background": false
+    }
+  ]
+}

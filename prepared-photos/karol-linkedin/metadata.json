@@ -1,0 +1,61 @@
+{
+  "source": "source-photos/karol-linkedin.jpg",
+  "photo_name": "karol-linkedin",
+  "dimensions": {
+    "width": 800,
+    "height": 1115
+  },
+  "aspect_ratio": 0.7174887892376681,
+  "prepared_at": "2026-01-19T20:47:51.662593",
+  "layers": {
+    "person": "person.png",
+    "background": "background.png",
+    "mask": "mask.png",
+    "depth": "depth.png"
+  },
+  "animations": {
+    "background_effects": [
+      "parallax",
+      "time_of_day"
+    ],
+    "person_clips": [
+      "idle",
+      "look_left",
+      "look_right",
+      "smile",
+      "sup_dude"
+    ]
+  },
+  "clips": [
+    {
+      "name": "idle",
+      "type": "person_layer",
+      "file": "karol-linkedin_idle_person.mp4",
+      "has_background": false
+    },
+    {
+      "name": "look_left",
+      "type": "person_layer",
+      "file": "karol-linkedin_look_left_person.mp4",
+      "has_background": false
+    },
+    {
+      "name": "look_right",
+      "type": "person_layer",
+      "file": "karol-linkedin_look_right_person.mp4",
+      "has_background": false
+    },
+    {
+      "name": "smile",
+      "type": "person_layer",
+      "file": "karol-linkedin_smile_person.mp4",
+      "has_background": false
+    },
+    {
+      "name": "sup_dude",
+      "type": "person_layer",
+      "file": "karol-linkedin_sup_dude_person.mp4",
+      "has_background": false
+    }
+  ]
+}
