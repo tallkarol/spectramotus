@@ -1,8 +1,8 @@
 # Additional dependencies not in base requirements
 # Install these after installing requirements_base.txt and requirements.txt/requirements_macOS.txt
 
-# Background removal
-rembg
+# Background removal (RMBG-2.0 support requires >= 2.0.0)
+rembg>=2.0.0
 
 # Hand gesture detection
 mediapipe

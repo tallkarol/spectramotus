@@ -18,41 +18,218 @@ from datetime import datetime
 import argparse
 import requests
 
-# Load .env file for CLIPDROP_API_KEY
+# Load .env file for CLIPDROP_API_KEY and HUGGINGFACE_API_KEY
 try:
     from dotenv import load_dotenv
     load_dotenv()
+    
+    # Set HF_TOKEN for Hugging Face authentication (required for RMBG-2.0)
+    # rembg uses huggingface_hub which expects HF_TOKEN or HUGGINGFACE_HUB_TOKEN
+    hf_api_key = os.environ.get("HUGGINGFACE_API_KEY")
+    if hf_api_key and not os.environ.get("HF_TOKEN"):
+        os.environ["HF_TOKEN"] = hf_api_key
+        print("✓ Hugging Face API key loaded from .env (for RMBG-2.0)")
 except ImportError:
     print("Warning: python-dotenv not installed. Install with: pip install python-dotenv")
 
 import cv2
 import numpy as np
 from PIL import Image
-from rembg import remove
+from rembg import remove, new_session
 
-# Depth estimation (optional)
+# Try to import torch and transformers for direct RMBG-2.0 model access
 try:
-    from transformers import pipeline
+    import torch
+    from torchvision import transforms
+    from transformers import AutoModelForImageSegmentation, pipeline
+    TORCH_AVAILABLE = True
     DEPTH_AVAILABLE = True
 except ImportError:
-    DEPTH_AVAILABLE = False
+    TORCH_AVAILABLE = False
+    try:
+        from transformers import pipeline
+        DEPTH_AVAILABLE = True
+    except ImportError:
+        DEPTH_AVAILABLE = False
 
 OUTPUT_BASE_DIR = "prepared-photos"
+
+def refine_mask(mask_pil, original_image, threshold=0.5, morph_kernel_size=5, edge_smooth=3):
+    """
+    Refine mask to improve person detection quality
+    
+    Args:
+        mask_pil: PIL Image mask (grayscale, 0-255)
+        original_image: Original PIL Image for reference
+        threshold: Threshold for binarization (0.0-1.0, lower = more inclusive)
+        morph_kernel_size: Size of morphological operations kernel
+        edge_smooth: Gaussian blur radius for edge smoothing
+    
+    Returns: Refined PIL Image mask
+    """
+    mask_array = np.array(mask_pil, dtype=np.float32) / 255.0
+    
+    # 1. Threshold adjustment (lower threshold = include more pixels)
+    # This helps if the model is too conservative
+    mask_array = np.where(mask_array > threshold, mask_array, 0)
+    
+    # 2. Morphological operations to clean up the mask
+    # Opening: removes small noise/holes
+    # Closing: fills small gaps
+    kernel = cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (morph_kernel_size, morph_kernel_size))
+    mask_array = cv2.morphologyEx((mask_array * 255).astype(np.uint8), cv2.MORPH_OPEN, kernel)
+    mask_array = cv2.morphologyEx(mask_array, cv2.MORPH_CLOSE, kernel)
+    mask_array = mask_array.astype(np.float32) / 255.0
+    
+    # 3. Edge smoothing for better transitions
+    if edge_smooth > 0:
+        mask_array = cv2.GaussianBlur(mask_array, (edge_smooth * 2 + 1, edge_smooth * 2 + 1), 0)
+    
+    # 4. Ensure values are in valid range
+    mask_array = np.clip(mask_array, 0, 1)
+    
+    return Image.fromarray((mask_array * 255).astype(np.uint8), mode='L')
+
+def enhance_image_for_detection(image_pil, contrast_factor=1.2, brightness_factor=1.0):
+    """
+    Enhance image contrast/brightness to improve model detection
+    
+    Args:
+        image_pil: PIL Image
+        contrast_factor: Contrast multiplier (>1.0 = more contrast)
+        brightness_factor: Brightness multiplier (>1.0 = brighter)
+    
+    Returns: Enhanced PIL Image
+    """
+    from PIL import ImageEnhance
+    
+    enhanced = image_pil.copy()
+    
+    if contrast_factor != 1.0:
+        enhancer = ImageEnhance.Contrast(enhanced)
+        enhanced = enhancer.enhance(contrast_factor)
+    
+    if brightness_factor != 1.0:
+        enhancer = ImageEnhance.Brightness(enhanced)
+        enhanced = enhancer.enhance(brightness_factor)
+    
+    return enhanced
 
 def get_photo_name(photo_path):
     """Extract base name without extension"""
     return Path(photo_path).stem
 
-def remove_background(image_path):
+def remove_background(image_path, model_name="rmbg-2.0", mask_threshold=0.5, enhance_contrast=1.0, enhance_brightness=1.0):
     """
-    Remove background using RMBG
+    Remove background using RMBG-2.0 (BRIA AI's state-of-the-art model)
+    
+    Args:
+        image_path: Path to input image
+        model_name: Model to use. Options:
+            - "rmbg-2.0" (default) - BRIA AI's RMBG v2.0, best quality (uses direct transformers)
+            - "briaai" - Alternative name for RMBG-2.0
+            - "u2net" - Original U2Net model (fallback via rembg)
+            - "u2netp" - Lightweight U2Net model
+            - "u2net_human_seg" - Human segmentation model (good for people)
+            - "u2net_cloth_seg" - Clothing segmentation model
+            - "silueta" - Silueta model
+            - "isnet-general-use" - ISNet general use model
+        mask_threshold: Mask threshold (0.0-1.0). Lower = more inclusive, higher = more conservative
+        enhance_contrast: Contrast enhancement factor (1.0 = no change, >1.0 = more contrast)
+        enhance_brightness: Brightness enhancement factor (1.0 = no change, >1.0 = brighter)
+    
     Returns: PIL Image with alpha channel
     """
-    print("Removing background...")
+    print(f"Removing background using {model_name}...")
     input_image = Image.open(image_path)
-    output_image = remove(input_image)
-    print(f"✓ Background removed (output size: {output_image.size})")
-    return output_image
+    
+    # Enhance image if requested (can help with detection)
+    if enhance_contrast != 1.0 or enhance_brightness != 1.0:
+        print(f"  Enhancing image (contrast: {enhance_contrast:.2f}, brightness: {enhance_brightness:.2f})...")
+        input_image = enhance_image_for_detection(input_image, enhance_contrast, enhance_brightness)
+    
+    # Use direct transformers approach for RMBG-2.0 if torch is available
+    if model_name in ["rmbg-2.0", "briaai"] and TORCH_AVAILABLE:
+        try:
+            print("  Using direct RMBG-2.0 model via transformers...")
+            device = 'cuda' if torch.cuda.is_available() else 'cpu'
+            print(f"  Device: {device}")
+            
+            # Load model (will use HF_TOKEN from environment)
+            model = AutoModelForImageSegmentation.from_pretrained(
+                'briaai/RMBG-2.0', 
+                trust_remote_code=True
+            ).eval().to(device)
+            
+            # Data settings
+            image_size = (1024, 1024)
+            transform_image = transforms.Compose([
+                transforms.Resize(image_size),
+                transforms.ToTensor(),
+                transforms.Normalize([0.485, 0.456, 0.406], [0.229, 0.224, 0.225])
+            ])
+            
+            # Convert image to RGB if needed
+            if input_image.mode != 'RGB':
+                input_image = input_image.convert('RGB')
+            
+            # Transform and predict
+            input_tensor = transform_image(input_image).unsqueeze(0).to(device)
+            
+            with torch.no_grad():
+                preds = model(input_tensor)[-1].sigmoid().cpu()
+            
+            pred = preds[0].squeeze()
+            pred_pil = transforms.ToPILImage()(pred)
+            mask = pred_pil.resize(input_image.size)
+            
+            # Post-process mask to improve person detection
+            print(f"  Refining mask (threshold: {mask_threshold:.2f})...")
+            mask = refine_mask(mask, input_image, threshold=mask_threshold)
+            
+            # Apply mask as alpha channel
+            output_image = input_image.copy()
+            output_image.putalpha(mask)
+            
+            print(f"✓ Background removed using {model_name} (output size: {output_image.size})")
+            return output_image
+            
+        except Exception as e:
+            print(f"⚠ Direct model approach failed: {e}")
+            print("  Falling back to rembg...")
+            import traceback
+            traceback.print_exc()
+    
+    # Fallback to rembg for other models or if direct approach fails
+    try:
+        if model_name in ["rmbg-2.0", "briaai"]:
+            # Try rembg with briaai model
+            print("  Trying rembg with briaai model...")
+            try:
+                session = new_session("briaai")
+                output_image = remove(input_image, session=session)
+                print(f"✓ Background removed using {model_name} via rembg (output size: {output_image.size})")
+                return output_image
+            except Exception:
+                pass
+        
+        # Use rembg with specified model or default
+        if model_name not in ["rmbg-2.0", "briaai"]:
+            session = new_session(model_name)
+            output_image = remove(input_image, session=session)
+        else:
+            # Fallback to default model
+            output_image = remove(input_image)
+        
+        print(f"✓ Background removed using {model_name} (output size: {output_image.size})")
+        return output_image
+        
+    except Exception as e:
+        print(f"⚠ Error with {model_name}: {e}")
+        print("  Falling back to default rembg model...")
+        output_image = remove(input_image)
+        print(f"✓ Background removed using default model (output size: {output_image.size})")
+        return output_image
 
 def create_binary_mask(person_rgba):
     """
@@ -338,13 +515,32 @@ def create_metadata(photo_name, source_path, dimensions, output_dir):
     print(f"✓ Metadata saved")
     return metadata
 
-def prepare_photo(image_path, skip_depth=False, api_key=None):
-    """Main preparation pipeline"""
+def prepare_photo(image_path, skip_depth=False, api_key=None, bg_model="rmbg-2.0", 
+                  mask_threshold=0.5, enhance_contrast=1.0, enhance_brightness=1.0):
+    """
+    Main preparation pipeline
+    
+    Args:
+        image_path: Path to source image
+        skip_depth: Skip depth map generation
+        api_key: ClipDrop API key for background inpainting
+        bg_model: Background removal model name (default: "rmbg-2.0" for RMBG-2.0)
+        mask_threshold: Mask threshold (0.0-1.0). Lower = more inclusive, higher = more conservative
+        enhance_contrast: Contrast enhancement factor (1.0 = no change, >1.0 = more contrast)
+        enhance_brightness: Brightness enhancement factor (1.0 = no change, >1.0 = brighter)
+    """
     
     print("\n" + "="*60)
     print("SPECTRAMOTUS PHOTO PREPARATION")
     print("="*60)
     print(f"Source: {image_path}")
+    print(f"Background removal: {bg_model}")
+    if bg_model == "rmbg-2.0":
+        print("  → Using RMBG-2.0 (BRIA AI) - State-of-the-art quality")
+    if mask_threshold != 0.5:
+        print(f"  → Mask threshold: {mask_threshold:.2f} (lower = more inclusive)")
+    if enhance_contrast != 1.0 or enhance_brightness != 1.0:
+        print(f"  → Image enhancement: contrast={enhance_contrast:.2f}, brightness={enhance_brightness:.2f}")
     if api_key:
         print(f"C4 Pipeline: ClipDrop + Feathered Blending + OpenCV Sharpening")
     else:
@@ -364,8 +560,14 @@ def prepare_photo(image_path, skip_depth=False, api_key=None):
     print(f"Output directory: {output_dir}\n")
     
     try:
-        # Step 1: Remove background
-        person_rgba = remove_background(image_path)
+        # Step 1: Remove background using RMBG-2.0
+        person_rgba = remove_background(
+            image_path, 
+            model_name=bg_model,
+            mask_threshold=mask_threshold,
+            enhance_contrast=enhance_contrast,
+            enhance_brightness=enhance_brightness
+        )
         person_path = os.path.join(output_dir, "person.png")
         person_rgba.save(person_path)
         print(f"  → Saved: {person_path}")
@@ -441,7 +643,7 @@ def prepare_photo(image_path, skip_depth=False, api_key=None):
 
 def main():
     parser = argparse.ArgumentParser(
-        description="Prepare photos for animation - RMBG → ClipDrop API → OpenCV fallback"
+        description="Prepare photos for animation - RMBG-2.0 → ClipDrop API → OpenCV fallback"
     )
     parser.add_argument(
         "image_path",
@@ -457,13 +659,40 @@ def main():
         help="ClipDrop API key (or set CLIPDROP_API_KEY in .env)",
         default=os.environ.get("CLIPDROP_API_KEY")
     )
+    parser.add_argument(
+        "--bg-model",
+        default="rmbg-2.0",
+        help="Background removal model (default: rmbg-2.0). Options: rmbg-2.0, briaai, u2net, u2netp, u2net_human_seg, u2net_cloth_seg, silueta, isnet-general-use"
+    )
+    parser.add_argument(
+        "--mask-threshold",
+        type=float,
+        default=0.5,
+        help="Mask threshold (0.0-1.0). Lower = more inclusive (captures more of person), higher = more conservative. Default: 0.5"
+    )
+    parser.add_argument(
+        "--enhance-contrast",
+        type=float,
+        default=1.0,
+        help="Contrast enhancement factor (1.0 = no change, >1.0 = more contrast). Can help with detection. Default: 1.0"
+    )
+    parser.add_argument(
+        "--enhance-brightness",
+        type=float,
+        default=1.0,
+        help="Brightness enhancement factor (1.0 = no change, >1.0 = brighter). Can help with detection. Default: 1.0"
+    )
     
     args = parser.parse_args()
     
     success = prepare_photo(
         args.image_path,
         skip_depth=args.skip_depth,
-        api_key=args.clipdrop_api_key
+        api_key=args.clipdrop_api_key,
+        bg_model=args.bg_model,
+        mask_threshold=args.mask_threshold,
+        enhance_contrast=args.enhance_contrast,
+        enhance_brightness=args.enhance_brightness
     )
     
     sys.exit(0 if success else 1)

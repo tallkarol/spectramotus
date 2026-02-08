@@ -117,6 +117,8 @@ CLIPDROP_API_KEY=your_api_key_here
 python prepare_photo.py source-photos/your-photo.jpg
 ```
 
+**Note:** By default, this uses **RMBG-2.0** (BRIA AI) for state-of-the-art background removal quality.
+
 This creates:
 - `prepared-photos/your-photo/person.png` - Person with alpha channel
 - `prepared-photos/your-photo/person_greenscreen.png` - Person on green background
@@ -167,10 +169,31 @@ python prepare_photo.py <source_image_path>
 **Options:**
 - `--skip-depth` - Skip depth map generation (faster)
 - `--clipdrop-api-key KEY` - Use ClipDrop API for better background inpainting
+- `--bg-model MODEL` - Background removal model (default: `rmbg-2.0`)
 
-**Example:**
+**Background Removal Models:**
+- `rmbg-2.0` (default) - BRIA AI's RMBG v2.0, state-of-the-art quality
+- `briaai` - Alternative name for RMBG-2.0
+- `u2net` - Original U2Net model
+- `u2netp` - Lightweight U2Net model
+- `u2net_human_seg` - Human segmentation model
+- `u2net_cloth_seg` - Clothing segmentation model
+- `silueta` - Silueta model
+- `isnet-general-use` - ISNet general use model
+
+**Examples:**
 ```bash
+# Using default RMBG-2.0 (recommended)
+python prepare_photo.py source-photos/portrait.jpg
+
+# With ClipDrop API for better background inpainting
 python prepare_photo.py source-photos/portrait.jpg --clipdrop-api-key sk-xxx
+
+# Using different background removal model
+python prepare_photo.py source-photos/portrait.jpg --bg-model u2net_human_seg
+
+# Skip depth map for faster processing
+python prepare_photo.py source-photos/portrait.jpg --skip-depth
 ```
 
 ### Batch Video Generation
@@ -282,7 +305,7 @@ spectramotus/
 - **matplotlib** (3.9.0) - Plotting
 - **pykalman** (0.9.7) - Kalman filtering
 - **lmdb** (1.4.1) - Database
-- **rembg** - Background removal (installed separately)
+- **rembg** - Background removal (supports RMBG-2.0 model)
 - **mediapipe** - Hand gesture detection (installed separately)
 - **python-dotenv** - Environment variables (installed separately)
 
@@ -421,5 +444,17 @@ Edit `interactive_portrait.py`:
 ## Credits
 
 - Built on [LivePortrait](https://github.com/KwaiVGI/LivePortrait)
-- Uses [RMBG](https://github.com/brianmario/rembg) for background removal
+- Uses [RMBG-2.0](https://huggingface.co/briaai/RMBG-2.0) (BRIA AI) for state-of-the-art background removal
+- Uses [rembg](https://github.com/danielgatis/rembg) Python library
 - Uses [MediaPipe](https://mediapipe.dev/) for gesture detection
+
+## Background Removal Models
+
+This project uses **RMBG-2.0** by default, which is BRIA AI's state-of-the-art background removal model. It provides superior quality compared to previous models and handles:
+- General stock images
+- E-commerce content
+- Gaming images
+- Advertising content
+- Human portraits
+
+The model is available for non-commercial use. For commercial use, see [BRIA AI's licensing](https://huggingface.co/briaai/RMBG-2.0).
