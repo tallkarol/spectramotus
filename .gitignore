@@ -1,40 +1,57 @@
 # Byte-compiled / optimized / DLL files
 __pycache__/
-**/__pycache__/
 *.py[cod]
-**/*.py[cod]
 *$py.class
 
-# Model weights
+# Environments and secrets
+.venv/
+.env
+.env.*
+!.env.example
+
+# Model weights and downloaded models (re-downloadable)
 **/*.pth
 **/*.onnx
+pretrained_weights/*
+!pretrained_weights/.gitkeep
+models/
 
-pretrained_weights/*.md
-pretrained_weights/docs
-pretrained_weights/liveportrait
-pretrained_weights/liveportrait_animals
+# Pipeline intermediates and deliverables
+work/
+packs/
+temp_output/
+generated_clips/
+generated-clips/
+prepared-photos/
+source-photos/
+ledger.sqlite*
+*.sqlite
+*.sqlite-*
+*.jsonl
 
-# Ipython notebook
+# Driving performances: videos live in the asset bucket; templates + manifest stay in git
+driving-performances/**/*.mp4
+driving-performances/**/*.MP4
+driving-performances/**/*.mov
+driving-performances/**/*.MOV
+
+# Web (Next.js)
+web/node_modules/
+web/.next/
+web/out/
+
+# Editors / OS
+.vscode/launch.json
+.idea/
+**/*.DS_Store
 *.ipynb
 
-# Temporary files or benchmark resources
+# Legacy LivePortrait leftovers
 animations/*
 tmp/*
-.vscode/launch.json
-**/*.DS_Store
 gradio_temp/**
-
-# Windows dependencies
 ffmpeg/
 LivePortrait_env/
-
-# XPose build files
 src/utils/dependencies/XPose/models/UniPose/ops/build
 src/utils/dependencies/XPose/models/UniPose/ops/dist
 src/utils/dependencies/XPose/models/UniPose/ops/MultiScaleDeformableAttention.egg-info
-
-.env
-
-prepared-photos/
-source-photos/
-generated-clips/

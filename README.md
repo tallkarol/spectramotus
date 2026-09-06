@@ -1,3 +1,9 @@
+> **v4 rebuild in progress (September 2026).** Everything below documents the January 2026 POC pipeline,
+> whose scripts now live in `legacy/`. New code lives in the `spectramotus/` package: `uv sync`, then
+> `uv run spectramotus doctor`. Start with `docs/driving-performances-shotlist.md` (what to record),
+> `THIRD_PARTY_NOTICES.md` (licensing) and `src/VENDORED.md` (LivePortrait snapshot). Copy `.env.example`
+> to `.env` for API keys.
+
 # Spectramotus
 
 An interactive portrait animation system that creates animated portraits from photos using LivePortrait, with gesture-controlled animations and dynamic background compositing.
