@@ -37,4 +37,4 @@ src/utils/dependencies/XPose/models/UniPose/ops/MultiScaleDeformableAttention.eg
 
 prepared-photos/
 source-photos/
-generated-clips/
+generated-clips/runway-tests/
