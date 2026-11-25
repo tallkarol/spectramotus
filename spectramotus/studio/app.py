@@ -42,7 +42,7 @@ def create_app(data_dir=None, password=None, demo_dir=None):
             if str(uuid.UUID(pid))!=pid: raise ValueError()
             p=projects/pid
             return p,json.loads((p/'project.json').read_text())
-        except (ValueError,FileNotFoundError): raise HTTPException(404,'Portrait not found')
+        except (ValueError,FileNotFoundError): raise HTTPException(404,'Spectra not found')
     def token():
         body=str(int(time.time())+7*86400)
         return body+'.'+hmac.new(secret.encode(),body.encode(),hashlib.sha256).hexdigest()
@@ -223,16 +223,16 @@ def create_app(data_dir=None, password=None, demo_dir=None):
             raise HTTPException(400,'Upload a valid JPG, PNG or WebP photo under 40 megapixels.')
         with lock:
             pending=sum(json.loads(p.read_text())['status']=='preparing' for p in projects.glob('*/project.json'))
-            if pending>=3:raise HTTPException(429,'Three portraits are already preparing. Please wait.')
-            if len(list(projects.iterdir()))>=100:raise HTTPException(409,'Workshop limit reached (100 portraits). Export and archive data before adding more.')
+            if pending>=3:raise HTTPException(429,'Three spectras are already preparing. Please wait.')
+            if len(list(projects.iterdir()))>=100:raise HTTPException(409,'Workshop limit reached (100 spectras). Export and archive data before adding more.')
             pid=str(uuid.uuid4());p=projects/pid;p.mkdir()
             photo.save(p/'source.png')
-            record={'id':pid,'name':(name.strip() or 'Untitled portrait')[:80],'status':'preparing','created_at':time.time(),'credits_spent':0,'motus_plan':plan,'planned_tokens':sum(m['token_price'] for m in plan),'tokens_charged':0,'generation_enabled':False}
+            record={'id':pid,'name':(name.strip() or 'Untitled spectra')[:80],'status':'preparing','created_at':time.time(),'credits_spent':0,'motus_plan':plan,'planned_tokens':sum(m['token_price'] for m in plan),'tokens_charged':0,'generation_enabled':False}
             save(p,record)
         pool.submit(build,pid)
         return record
     @app.post('/api/projects',status_code=202)
-    async def upload(photo:UploadFile=File(...),name:str=Form('My portrait'),motus_ids:str|None=Form(None)):
+    async def upload(photo:UploadFile=File(...),name:str=Form('My spectra'),motus_ids:str|None=Form(None)):
         raw=await photo.read(MAX_UPLOAD+1);await photo.close();return await ingest(raw,name,motus_ids)
     @app.post('/api/demo',status_code=202)
     async def import_demo():

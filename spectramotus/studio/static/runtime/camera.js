@@ -52,7 +52,7 @@
     if(token!==run)return;
     clearTimeout(timeout);
     if(data.type==='ready'){starting=false;button.textContent='Stop camera';button.setAttribute('aria-pressed','true');say('Ready. Wave hello or give a thumbs-up.');record('Camera ready');window.portraitTelemetry?.emit('camera_ready',{width:video.videoWidth,height:video.videoHeight,trackingProfile:'acquisition-v2'});rateStarted=performance.now();frames=0;frame(token)}
-    else if(data.type==='error'){console.error('Portrait gesture worker:',data.message);stop('Gesture recognition stopped. Enable camera to retry.')}
+    else if(data.type==='error'){console.error('Spectra gesture worker:',data.message);stop('Gesture recognition stopped. Enable camera to retry.')}
     else if(data.type==='result'){
      busy=false;const now=performance.now(),sample=data.sample;frames++;draw(data.landmarks);
      const listening=window.portraitTelemetry?.acceptingGesture()??true;
@@ -67,7 +67,7 @@
      if(event){
        window.portraitTelemetry?.emit('recognized',{gesture:event,candidateMs:Math.round(gate.lastDetectionMs),inferenceMs:Math.round(data.inferenceMs||0),frameAgeMs:Math.round(now-data.frameTime)});
        const accepted=window.portraitPlayer.gesture(event);
-       record((event==='wave'?'Wave':'Thumbs-up')+' · detected in '+Math.round(gate.lastDetectionMs)+' ms'+(accepted?' → accepted':' → portrait busy'));
+       record((event==='wave'?'Wave':'Thumbs-up')+' · detected in '+Math.round(gate.lastDetectionMs)+' ms'+(accepted?' → accepted':' → spectra busy'));
        feedbackUntil=now+2000;
        say(accepted?(window.portraitPlayer.waiting()?'Got it — you’re next.':(event==='wave'?'Wave received.':'Thumbs-up received.'))+' Switch gestures, or lower your hand briefly to repeat.':'A reaction is already queued. Try again when it starts.');
      }else if(now>feedbackUntil){

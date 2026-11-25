@@ -19,7 +19,7 @@
    if(kind==='playback_error')finishTrial('playback_error');
   }
   if(stage==='awaiting_idle'&&kind==='first_frame'&&(detail.role==='idle'||detail.clip==='idle_blink')){
-   clearTimeout(timer);running=false;stage='complete';returnedToIdle=true;prompt.textContent='Finished. Ten isolated attempts tested; portrait returned to idle.';window.portraitPlayer?.endTest();controls();
+   clearTimeout(timer);running=false;stage='complete';returnedToIdle=true;prompt.textContent='Finished. Ten isolated attempts tested; spectra returned to idle.';window.portraitPlayer?.endTest();controls();
   }
   render();return event;
  };
@@ -31,7 +31,7 @@
   $('test-results').textContent=JSON.stringify({schema:3,stage,trials:trials.map(({filterSamples,...trial})=>trial),returnedToIdle},null,2);
  }
  function controls(){$('test-start').disabled=running;$('test-stop').hidden=!running}
- function waitForNeutral(){stage='waiting_neutral';neutralSince=null;prompt.textContent='Lower your hand. Waiting for the portrait to finish and your hand to reset…'}
+ function waitForNeutral(){stage='waiting_neutral';neutralSince=null;prompt.textContent='Lower your hand. Waiting for the spectra to finish and your hand to reset…'}
  function finishTrial(status){
   if(!current)return;clearTimeout(timer);current.status=status;current.finishedAt=Math.round(performance.now());
   if(current.samples)current.meanInferenceMs=Math.round(current.totalInferenceMs/current.samples);

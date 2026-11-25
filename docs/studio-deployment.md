@@ -53,3 +53,7 @@ The setup follows Raspberry Pi's documented labwc/Chromium approach: https://www
 4. Before opening to customers, add individual accounts and server-enforced owner/admin roles, durable jobs, a token ledger and verified payment webhooks. Reserve tokens atomically at job submission, settle once, and reconcile failed provider submissions. Add backups for the persistent volume; use a database/private object storage as needed for that multi-user stage.
 
 Do not add payment infrastructure, a worker fleet, or a second frontend merely to support this owner-only prototype.
+
+## Product language
+
+User-facing objects are **spectras** (singular: **spectra**). Creation uses **Craft a spectra**. Internal pack filenames, API paths, and identifiers retain their existing names for compatibility.

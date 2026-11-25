@@ -14,7 +14,7 @@ MAX_VIDEO=64*1024*1024
 SEEDS=[
     ('wave','Wave','A friendly wave, then back to the photograph.','wave'),
     ('thumbs_up','Thumbs-up','A little encouragement, then back to rest.','thumbs_up'),
-    ('idle_blink','A quiet moment','A subtle blink while the portrait waits.','idle'),
+    ('idle_blink','A quiet moment','A subtle blink while the spectra waits.','idle'),
 ]
 
 class MotusLibrary:
