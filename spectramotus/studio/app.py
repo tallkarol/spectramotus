@@ -1,4 +1,4 @@
-"""Single-owner placeholder studio. No paid provider imports or API calls."""
+"""Invite-only portrait studio. No paid provider imports or API calls."""
 from concurrent.futures import ThreadPoolExecutor
 from contextlib import asynccontextmanager
 from pathlib import Path
@@ -17,31 +17,54 @@ import uuid
 from fastapi import FastAPI, File, Form, HTTPException, Request, UploadFile
 from fastapi.responses import FileResponse, HTMLResponse, JSONResponse, RedirectResponse
 from PIL import Image, ImageOps, UnidentifiedImageError
+from .database import Store, sessions, fingerprint
+from .accounts import Accounts, ResendMailer, mount_accounts, email_address
+from sqlalchemy import delete, select
 from .motus import MotusLibrary, mount_motus
 from .packs import STATIC, MAX_UPLOAD, make_pack, photo_signature, runtime_files
 
 
-def create_app(data_dir=None, password=None, demo_dir=None):
+def create_app(data_dir=None, password=None, demo_dir=None, database_url=None, auth_mode=None, owner_emails=None, mailer=None):
     root=Path(data_dir or os.getenv('STUDIO_DATA_DIR', 'work/studio'))
     root.mkdir(parents=True, exist_ok=True)
     projects=root/'projects'; projects.mkdir(exist_ok=True)
     demo=Path(demo_dir or os.getenv('STUDIO_DEMO_DIR', 'work/studio-demo'))
+    bootstrap=Path('/app/bootstrap-demo')
+    if bootstrap.exists() and not demo.exists():
+        staging=demo.with_name(demo.name+'-importing');shutil.copytree(bootstrap,staging,dirs_exist_ok=True);staging.replace(demo)
     secret=password if password is not None else os.getenv('STUDIO_PASSWORD')
-    if not secret:
-        raise RuntimeError('Set STUDIO_PASSWORD before starting the studio.')
+    mode=auth_mode or os.getenv('STUDIO_AUTH_MODE','password')
+    if mode not in {'password','email'}:raise RuntimeError('Unknown auth mode.')
+    if mode=='password' and not secret:raise RuntimeError('Set STUDIO_PASSWORD before starting the studio.')
     secure=os.getenv('STUDIO_SECURE_COOKIE','0')=='1'
     lock=threading.Lock()
     pool=ThreadPoolExecutor(max_workers=1)
     attempts={}
-    motus=MotusLibrary(root/'motus')
+    url=database_url or os.getenv('DATABASE_URL')
+    if mode=='email' and not url:raise RuntimeError('Email sign-in requires a database URL.')
+    if mode=='email' and secure and not url.startswith(('postgres://','postgresql://','postgresql+psycopg://')):raise RuntimeError('Production requires PostgreSQL.')
+    store=Store(url or 'sqlite:///'+str((root/'studio.sqlite').resolve()))
+    addresses=owner_emails or [v.strip() for v in os.getenv('STUDIO_OWNER_EMAILS','').split(',') if v.strip()]
+    if not addresses:
+        if mode=='email':raise RuntimeError('Configure owner emails before enabling email sign-in.')
+        addresses=['owner@localhost.test']
+    addresses=[email_address(v) for v in addresses]
+    owner_id=store.seed_owner(addresses)
+    store.import_legacy(root,owner_id)
+    accounts=Accounts(store,os.getenv('STUDIO_APP_URL','http://localhost'),secure,mailer or (ResendMailer() if mode=='email' else None))
+    owner=store.by_email(addresses[0])
+    for address in os.getenv('STUDIO_INITIAL_ADMINS','').split(','):
+        if address.strip() and not store.by_email(email_address(address)):accounts.grant(email_address(address),'admin',owner)
+    motus=MotusLibrary(root/'motus',store)
+
 
     def save(p, value):
-        tmp=p/'project.tmp'; tmp.write_text(json.dumps(value,indent=2)); tmp.replace(p/'project.json')
+        store.save_project(value,owner_id)
     def load(pid):
         try:
             if str(uuid.UUID(pid))!=pid: raise ValueError()
             p=projects/pid
-            return p,json.loads((p/'project.json').read_text())
+            return p,store.get_project(pid)
         except (ValueError,FileNotFoundError): raise HTTPException(404,'Spectrum not found')
     def token():
         body=str(int(time.time())+7*86400)
@@ -113,7 +136,7 @@ def create_app(data_dir=None, password=None, demo_dir=None):
                 rest.save(out/'rest.png')
             matching=False
             if (demo/'photo.jpg').exists() and (demo/'wave.mp4').exists():
-                matching=photo_signature(p/'source.png')==photo_signature(demo/'photo.jpg')
+                matching=record.get('allow_demo',True) and photo_signature(p/'source.png')==photo_signature(demo/'photo.jpg')
             if matching:
                 # Match the exact rest canvas used to repair the existing clip.
                 with Image.open(demo/'photo.jpg') as im:
@@ -152,8 +175,8 @@ def create_app(data_dir=None, password=None, demo_dir=None):
                 _,record=load(pid); record.update(status='failed',error='Preparation stopped. Retry this local placeholder job; no credits were spent.');save(p,record)
     @asynccontextmanager
     async def lifespan(app):
-        for p in projects.glob('*/project.json'):
-            record=json.loads(p.read_text())
+        for record in store.list_projects():
+            p=projects/record['id']/'project.json'
             if record['status']=='preparing':
                 record.update(status='failed',error='Server restarted during preparation. Retry to resume; no credits were spent.');save(p.parent,record)
             elif record['status'] in {'needs_review','ready'} and any([attach_wave(p.parent,record),attach_thumbs(p.parent,record),attach_idle(p.parent,record)]):
@@ -162,23 +185,36 @@ def create_app(data_dir=None, password=None, demo_dir=None):
                 record['status']='needs_review';save(p.parent,record)
         yield
         pool.shutdown(wait=True)
+        store.engine.dispose()
     app=FastAPI(lifespan=lifespan)
     app.state.root=root
+    app.state.store=store;app.state.accounts=accounts;app.state.owner=owner
     mount_motus(app,motus)
+    mount_accounts(app,accounts)
     @app.middleware('http')
     async def auth(request,call_next):
         path=request.url.path
         if request.method in {'POST','PUT','DELETE','PATCH'}:
             origin=request.headers.get('origin')
-            if origin and origin.rstrip('/')!=str(request.base_url).rstrip('/'):
+            expected=accounts.app_url if mode=='email' else str(request.base_url).rstrip('/')
+            if origin and origin.rstrip('/')!=expected:
                 return JSONResponse({'detail':'Cross-origin request refused'},403)
-        if path not in {'/login','/health'} and not valid(request.cookies.get('studio')):
-            if path.startswith('/api/') or path.startswith('/media/'):
-                return JSONResponse({'detail':'Please sign in again.'},401)
+        public={'/login','/health'}|({'/auth/request','/auth/verify','/auth/inspect','/auth/consume'} if mode=='email' else set())
+        user=accounts.session(request.cookies.get(accounts.cookie)) if mode=='email' else (owner if valid(request.cookies.get('studio')) else None)
+        request.state.user=user
+        if path not in public and not user:
+            if path.startswith(('/api/','/media/','/auth/')):return JSONResponse({'detail':'Please sign in again.'},401)
             return RedirectResponse('/login',status_code=303)
+        if user and (path.startswith('/admin') or path.startswith('/api/admin/')) and user['role'] not in {'owner','admin'}:
+            return JSONResponse({'detail':'Admin access required.'},403)
+        if user and user['role']=='beta' and (path.startswith('/media/') or path.startswith('/api/projects/')):
+            ident=path.split('/')[2 if path.startswith('/media/') else 3]
+            try:record=store.get_project(ident)
+            except FileNotFoundError:return JSONResponse({'detail':'Spectrum not found.'},404)
+            if record['owner_id']!=user['id']:return JSONResponse({'detail':'Spectrum not found.'},404)
         response=await call_next(request)
         response.headers['X-Content-Type-Options']='nosniff'
-        response.headers['Referrer-Policy']='same-origin'
+        response.headers['Referrer-Policy']='no-referrer'
         response.headers['Cache-Control']='no-store'
         response.headers['X-Frame-Options']='SAMEORIGIN'
         response.headers['Content-Security-Policy']="default-src 'self'; script-src 'self' 'unsafe-inline'; style-src 'self' 'unsafe-inline'; img-src 'self' blob: data:; media-src 'self' blob:; frame-src 'self'; connect-src 'self'; frame-ancestors 'self'; base-uri 'none'; form-action 'self'"
@@ -188,11 +224,14 @@ def create_app(data_dir=None, password=None, demo_dir=None):
             response.headers['Content-Security-Policy']="default-src 'self'; script-src 'self' 'wasm-unsafe-eval'; connect-src 'self'; object-src 'none'"
         return response
     @app.get('/health')
-    def health(): return {'status':'ok','mode':'placeholder','generation_enabled':False}
+    def health():
+        with store.engine.connect() as c:c.execute(select(1))
+        return {'status':'ok','mode':'placeholder','generation_enabled':False,'auth':mode,'database':store.engine.dialect.name}
     @app.get('/login',response_class=HTMLResponse)
-    def login(): return (STATIC/'login.html').read_text()
+    def login(): return (STATIC/('email-login.html' if mode=='email' else 'login.html')).read_text()
     @app.post('/login')
     async def sign_in(request:Request,password:str=Form(...)):
+        if mode!='password':raise HTTPException(410,'Password sign-in has been replaced by email links.')
         key=request.client.host if request.client else 'unknown'
         now=time.time(); recent=[t for t in attempts.get(key,[]) if now-t<60]
         if len(recent)>=10: raise HTTPException(429,'Please wait a minute before trying again.')
@@ -202,17 +241,26 @@ def create_app(data_dir=None, password=None, demo_dir=None):
         attempts.pop(key,None)
         response=RedirectResponse('/',303);response.set_cookie('studio',token(),httponly=True,secure=secure,samesite='strict',max_age=7*86400);return response
     @app.post('/logout')
-    def logout():
-        response=RedirectResponse('/login',303);response.delete_cookie('studio');return response
+    def logout(request:Request):
+        raw=request.cookies.get(accounts.cookie)
+        if raw:
+            with store.engine.begin() as c:c.execute(delete(sessions).where(sessions.c.hash==fingerprint(raw)))
+        response=RedirectResponse('/login',303);response.delete_cookie('studio');response.delete_cookie(accounts.cookie,path='/');return response
     @app.get('/',response_class=HTMLResponse)
     def index():return (STATIC/'index.html').read_text()
+    def visible_record(record,user):
+        if user['role']!='beta':return record
+        result=dict(record)
+        result['motus_plan']=[{k:r[k] for k in ('id','name','revision','trigger','token_price') if k in r} for r in record.get('motus_plan',[])]
+        return result
+
     @app.get('/api/projects')
-    def listing():
-        result=[json.loads(p.read_text()) for p in projects.glob('*/project.json')]
-        return sorted(result,key=lambda r:r['created_at'],reverse=True)
+    def listing(request:Request):
+        result=[r for r in store.list_projects() if request.state.user['role']!='beta' or r['owner_id']==request.state.user['id']]
+        return [visible_record(r,request.state.user) for r in sorted(result,key=lambda r:r['created_at'],reverse=True)]
     @app.get('/api/demo')
-    def demo_available():return {'available':(demo/'photo.jpg').exists() and (demo/'wave.mp4').exists()}
-    async def ingest(raw,name,selection=None):
+    def demo_available(request:Request):return {'available':request.state.user['role']!='beta' and (demo/'photo.jpg').exists() and (demo/'wave.mp4').exists()}
+    async def ingest(raw,name,selection=None,user=None):
         plan=motus.select(selection)
         if len(raw)>MAX_UPLOAD:raise HTTPException(413,'Photo must be under 15 MB.')
         try:
@@ -222,38 +270,39 @@ def create_app(data_dir=None, password=None, demo_dir=None):
         except (UnidentifiedImageError,OSError,ValueError,Image.DecompressionBombError):
             raise HTTPException(400,'Upload a valid JPG, PNG or WebP photo under 40 megapixels.')
         with lock:
-            pending=sum(json.loads(p.read_text())['status']=='preparing' for p in projects.glob('*/project.json'))
+            pending=sum(r['status']=='preparing' for r in store.list_projects())
             if pending>=3:raise HTTPException(429,'Three spectra are already preparing. Please wait.')
             if len(list(projects.iterdir()))>=100:raise HTTPException(409,'Workshop limit reached (100 spectra). Export and archive data before adding more.')
             pid=str(uuid.uuid4());p=projects/pid;p.mkdir()
             photo.save(p/'source.png')
-            record={'id':pid,'name':(name.strip() or 'Untitled spectrum')[:80],'status':'preparing','created_at':time.time(),'credits_spent':0,'motus_plan':plan,'planned_tokens':sum(m['token_price'] for m in plan),'tokens_charged':0,'generation_enabled':False}
+            record={'id':pid,'owner_id':user['id'] if user else owner_id,'allow_demo':not user or user['role']!='beta','name':(name.strip() or 'Untitled spectrum')[:80],'status':'preparing','created_at':time.time(),'credits_spent':0,'motus_plan':plan,'planned_tokens':sum(m['token_price'] for m in plan),'tokens_charged':0,'generation_enabled':False}
             save(p,record)
         pool.submit(build,pid)
         return record
     @app.post('/api/projects',status_code=202)
-    async def upload(photo:UploadFile=File(...),name:str=Form('My spectrum'),motus_ids:str|None=Form(None)):
-        raw=await photo.read(MAX_UPLOAD+1);await photo.close();return await ingest(raw,name,motus_ids)
+    async def upload(request:Request,photo:UploadFile=File(...),name:str=Form('My spectrum'),motus_ids:str|None=Form(None)):
+        raw=await photo.read(MAX_UPLOAD+1);await photo.close();return visible_record(await ingest(raw,name,motus_ids,request.state.user),request.state.user)
     @app.post('/api/demo',status_code=202)
-    async def import_demo():
+    async def import_demo(request:Request):
+        if request.state.user['role']=='beta':raise HTTPException(403,'Upload your own photo to craft a spectrum.')
         if not (demo/'photo.jpg').exists():raise HTTPException(404,'Example is not installed.')
-        return await ingest((demo/'photo.jpg').read_bytes(),'Karol at Plitvice')
+        return await ingest((demo/'photo.jpg').read_bytes(),'Karol at Plitvice',user=request.state.user)
     @app.get('/api/projects/{pid}')
-    def project(pid:str):return load(pid)[1]
+    def project(pid:str,request:Request):return visible_record(load(pid)[1],request.state.user)
     @app.post('/api/projects/{pid}/retry',status_code=202)
-    def retry(pid:str):
+    def retry(pid:str,request:Request):
         with lock:
             p,r=load(pid)
             if r['status']!='failed':raise HTTPException(409,'Only failed preparation can be retried.')
             r.update(status='preparing');r.pop('error',None);save(p,r)
-        pool.submit(build,pid);return r
+        pool.submit(build,pid);return visible_record(r,request.state.user)
     @app.post('/api/projects/{pid}/approve')
-    def approve(pid:str):
+    def approve(pid:str,request:Request):
         with lock:
             p,r=load(pid)
             if r['status'] not in {'needs_review','ready'}:raise HTTPException(409,'Preview must finish preparing first.')
             r.update(status='ready');save(p,r)
-        return r
+        return visible_record(r,request.state.user)
     @app.get('/api/projects/{pid}/download')
     def download(pid:str):
         p,r=load(pid)

@@ -6,6 +6,7 @@ import shutil
 
 parser=argparse.ArgumentParser()
 parser.add_argument('--photo',required=True,type=Path)
+parser.add_argument('--bootstrap-demo',action='store_true',help='Copy private demo assets into the image once to provision the persistent volume')
 parser.add_argument('--wave',required=True,type=Path)
 parser.add_argument('--thumbs-up',type=Path)
 parser.add_argument('--idle',type=Path)
@@ -19,6 +20,8 @@ out.mkdir(parents=True)
 for source,target in [('Dockerfile.studio','Dockerfile'),('requirements-studio.txt','requirements-studio.txt'),('spectramotus/__init__.py','spectramotus/__init__.py')]:
     dest=out/target;dest.parent.mkdir(parents=True,exist_ok=True);shutil.copyfile(root/source,dest)
 shutil.copytree(root/'spectramotus/studio',out/'spectramotus/studio',ignore=shutil.ignore_patterns('__pycache__'))
+if args.bootstrap_demo:
+    with (out/'Dockerfile').open('a') as docker:docker.write('\nCOPY demo /app/bootstrap-demo\n')
 (out/'demo').mkdir()
 shutil.copyfile(args.photo,out/'demo/photo.jpg')
 shutil.copyfile(args.wave,out/'demo/wave.mp4')

@@ -1,0 +1,9 @@
+**
+!Dockerfile.studio
+!requirements-studio.txt
+!spectramotus
+!spectramotus/__init__.py
+!spectramotus/studio
+!spectramotus/studio/**
+**/__pycache__
+**/*.pyc

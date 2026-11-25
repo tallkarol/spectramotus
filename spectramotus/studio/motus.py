@@ -9,6 +9,8 @@ import uuid
 from fastapi import APIRouter, File, Form, HTTPException, UploadFile
 from fastapi.responses import FileResponse, HTMLResponse
 from .packs import STATIC
+from .database import motus, revisions
+from sqlalchemy import select, insert, update
 
 MAX_VIDEO=64*1024*1024
 SEEDS=[
@@ -18,38 +20,57 @@ SEEDS=[
 ]
 
 class MotusLibrary:
-    def __init__(self, root):
+    def __init__(self, root, store):
+        self.store=store
         self.root=Path(root);self.root.mkdir(parents=True,exist_ok=True)
         self.assets=self.root/'assets';self.assets.mkdir(exist_ok=True)
         self.lock=threading.RLock()
         for ident,name,description,trigger in SEEDS:
-            path=self.root/(ident+'.json')
-            if not path.exists():
+            with store.engine.connect() as c:exists=c.execute(select(motus.c.id).where(motus.c.id==ident)).first()
+            if not exists:
                 self.write(dict(id=ident,name=name,description=description,trigger=trigger,prompt='',instructions='',enabled=True,token_price=0,revision=1,driving_video=None,updated_at=time.time()))
 
     def write(self, record):
-        target=self.root/(record['id']+'.json');tmp=target.with_suffix('.tmp')
-        tmp.write_text(json.dumps(record,indent=2));tmp.replace(target)
+        with self.store.engine.begin() as c:
+            previous=c.execute(select(motus).where(motus.c.id==record['id']).with_for_update()).mappings().first()
+            if previous and record['revision']!=previous['data']['revision']+1:raise HTTPException(409,'This movement changed in another tab. Reload before saving.')
+            record.setdefault('publication','published' if record['enabled'] else 'disabled')
+            published=record['revision'] if record['publication']=='published' else previous['published_revision'] if previous else None
+            values=dict(data=record,published_revision=published)
+            if previous:c.execute(update(motus).where(motus.c.id==record['id']).values(**values))
+            else:c.execute(insert(motus).values(id=record['id'],**values))
+            c.execute(insert(revisions).values(motus_id=record['id'],revision=record['revision'],data=record))
 
     def get(self, ident):
-        if not isinstance(ident,str) or not ident.replace('_','').replace('-','').isalnum() or len(ident)>80:
-            raise HTTPException(404,'Movement not found.')
-        try:return json.loads((self.root/(ident+'.json')).read_text())
-        except FileNotFoundError:raise HTTPException(404,'Movement not found.')
+        with self.store.engine.connect() as c:
+            record=c.execute(select(motus.c.data).where(motus.c.id==ident)).scalar_one_or_none()
+            if record is None:raise HTTPException(404,'Movement not found.')
+            return record
 
     def listing(self):
-        with self.lock:
-            return sorted([json.loads(p.read_text()) for p in self.root.glob('*.json')],key=lambda r:(r['id'] not in {s[0] for s in SEEDS},r['name'].lower()))
+        with self.store.engine.connect() as c:
+            return sorted(c.execute(select(motus.c.data)).scalars(),key=lambda r:(r['id'] not in {s[0] for s in SEEDS},r['name'].lower()))
+
+    def published(self):
+        with self.store.engine.connect() as c:
+            rows=c.execute(select(motus.c.data,revisions.c.data.label('published')).join(revisions,(revisions.c.motus_id==motus.c.id)&(revisions.c.revision==motus.c.published_revision))).mappings()
+            return [r['published'] for r in rows if r['data'].get('publication')!='disabled']
+
+    def history(self,ident):
+        self.get(ident)
+        with self.store.engine.connect() as c:return list(c.execute(select(revisions.c.data).where(revisions.c.motus_id==ident).order_by(revisions.c.revision.desc())).scalars())
 
     def select(self, value=None):
-        if value is None:ids=[s[0] for s in SEEDS if self.get(s[0])['enabled']]
+        available={r['id']:r for r in self.published()}
+        if value is None:ids=[s[0] for s in SEEDS if s[0] in available]
         else:
             try:ids=json.loads(value)
             except (ValueError,TypeError):raise HTTPException(400,'Choose valid movements.')
         if not isinstance(ids,list) or not 1<=len(ids)<=12 or any(not isinstance(i,str) for i in ids) or len(set(ids))!=len(ids):
             raise HTTPException(400,'Choose between 1 and 12 different movements.')
         with self.lock:
-            rows=[self.get(i) for i in ids]
+            if any(i not in available for i in ids):raise HTTPException(409,'A selected movement is no longer published. Refresh and choose again.')
+            rows=[available[i] for i in ids]
         if any(not r['enabled'] for r in rows):raise HTTPException(409,'A selected movement is no longer available. Refresh and choose again.')
         triggers=[r['trigger'] for r in rows if r['trigger']!='manual']
         if len(triggers)!=len(set(triggers)):raise HTTPException(400,'Choose one movement for each gesture or idle slot.')
@@ -67,10 +88,13 @@ def mount_motus(app, library):
     def catalog():
         return {'billing_enabled':False,'generation_enabled':False,'items':[
             {k:r[k] for k in ('id','name','description','trigger','token_price','revision')}
-            for r in library.listing() if r['enabled']]}
+            for r in library.published()]}
 
     @router.get('/api/admin/motus')
     def listing():return {'items':library.listing(),'billing_enabled':False,'generation_enabled':False}
+
+    @router.get('/api/admin/motus/{ident}/revisions')
+    def history(ident:str):return {'items':library.history(ident)}
 
     @router.get('/api/admin/motus/{ident}/video')
     def video(ident:str):
@@ -79,8 +103,11 @@ def mount_motus(app, library):
         return FileResponse(library.assets/name,media_type='video/mp4')
 
     @router.post('/api/admin/motus')
-    async def save_recipe(name:str=Form(...),description:str=Form(''),prompt:str=Form(''),instructions:str=Form(''),trigger:str=Form('manual'),enabled:bool=Form(False),token_price:int=Form(0),ident:str=Form(''),revision:int=Form(0),remove_video:bool=Form(False),markdown:UploadFile|None=File(None),driving_video:UploadFile|None=File(None)):
+    async def save_recipe(name:str=Form(...),description:str=Form(''),prompt:str=Form(''),instructions:str=Form(''),trigger:str=Form('manual'),enabled:bool=Form(False),token_price:int=Form(0),ident:str=Form(''),revision:int=Form(0),remove_video:bool=Form(False),publication:str=Form(''),markdown:UploadFile|None=File(None),driving_video:UploadFile|None=File(None)):
         name=name.strip();description=description.strip()
+        publication=publication or ('published' if enabled else 'disabled')
+        if publication not in {'draft','published','disabled'}:raise HTTPException(400,'Choose draft, published, or disabled.')
+        enabled=publication!='disabled'
         if not name or len(name)>80 or len(description)>300 or len(prompt)>12000 or len(instructions)>64000:
             raise HTTPException(400,'Use a name under 80 characters, description under 300, prompt under 12,000 and instructions under 64,000.')
         if trigger not in {'wave','thumbs_up','idle','manual'} or not 0<=token_price<=100000:
@@ -112,7 +139,7 @@ def mount_motus(app, library):
             else:
                 if len(library.listing())>=100:raise HTTPException(409,'Library limit reached (100 movements).')
                 ident=str(uuid.uuid4());previous={'revision':0,'driving_video':None}
-            record=dict(id=ident,name=name,description=description,prompt=prompt,instructions=instructions,trigger=trigger,enabled=enabled,token_price=token_price,revision=previous['revision']+1,driving_video=asset or (None if remove_video else previous['driving_video']),updated_at=time.time())
+            record=dict(id=ident,name=name,publication=publication,description=description,prompt=prompt,instructions=instructions,trigger=trigger,enabled=enabled,token_price=token_price,revision=previous['revision']+1,driving_video=asset or (None if remove_video else previous['driving_video']),updated_at=time.time())
             library.write(record)
         return record
     app.include_router(router)

@@ -1,59 +1,51 @@
-# Spectramotus studio: current architecture and release workflow
+# Spectramotus studio deployment
 
-Updated 25 November 2026. This describes the implemented system; older outlines are design references, not current implementation facts.
+Updated 25 November 2026.
 
-## What exists
+## App and storage
 
-- Repository: https://github.com/tallkarol/spectramotus
-- Studio: https://portrait-workshop-production.up.railway.app/
-- Owner admin: https://portrait-workshop-production.up.railway.app/admin
-- Python FastAPI serves HTML/JavaScript, authenticated APIs, and media. One process / one replica, with a small background preparation executor. No React build or separate frontend service.
-- Railway Docker build: Python 3.11, ffmpeg, pinned requirements. Persistent volume mounted at `/data`. Demo footage is copied into `/app/demo` in the deployment bundle.
-- `/data/projects/<id>` stores source photo, project/recipe snapshots, pack, and ZIP. `/data/motus` stores versioned recipe records and content-addressed driving-video uploads. Data currently uses JSON files with atomic replacements and process locks, not a SQL database or object bucket.
-- One password protects the entire owner studio, including admin, project APIs, and media. This is not a public multi-user app. Anyone with that password has owner capabilities.
-- Camera recognition and playback run in-browser with bundled MediaPipe assets. The same player is shipped in downloaded packs and the Pi starter kit. Camera frames are not uploaded.
-- No paid generation, token debits, checkout, or customer accounts are implemented in the studio.
+- Public repository: https://github.com/tallkarol/spectramotus
+- Studio: https://portrait-workshop-production.up.railway.app
+- FastAPI serves the studio, APIs, authenticated media and the shared browser/Pi player. One replica runs the background placeholder preparation executor.
+- PostgreSQL stores accounts, aliases, hashed sign-in links, revocable sessions, spectrum ownership, Motus recipes and immutable revisions. SQLAlchemy schema version 001 is additive; version 002 imports legacy JSON metadata once.
+- Railway's `/data` volume holds source images, clips, packs, driving videos and `/data/demo`. Media remains private and is served through account permissions.
+- The import preserves original metadata and also copies it to `/data/backups/before-postgres`. New changes live in Postgres; reverting to old JSON code would lose visibility of those changes. For an email outage, keep the new database-backed build and temporarily set `STUDIO_AUTH_MODE=password` rather than reverting the application.
+- Generation, token debits and payments remain disabled. Existing footage and clearly labelled placeholders are used. No camera frames leave the browser.
 
-## Motus flow
+## Accounts
 
-Admin recipe → enabled catalog → selected movements at upload → immutable recipe snapshots in the project → existing matching footage or labelled still-photo placeholders → review → downloadable offline pack.
+`STUDIO_OWNER_EMAILS` lists the primary owner email followed by aliases for the same account. `STUDIO_INITIAL_ADMINS` prepares admin access on first startup without sending email. Do not leave removed admins in this bootstrap list if accounts are later deleted.
 
-Recipe fields: name, short description, event/idle/manual trigger, prompt, Markdown text, optional H.264 driving video, enabled flag, proposed token price, revision. Markdown is stored as plain text. Driving videos are not automatically sent to any provider. Old hashed assets are retained for earlier project snapshots.
+Owner and admin can access all spectra and manage Motus. Only the owner can grant or revoke admin access. Both can prepare beta invitations; beta users see only their own spectra and published Motus, without private prompts or driving assets. Disabling an account immediately revokes sessions and pending links.
 
-Only one selected recipe may occupy each gesture/idle slot; multiple manual movements are allowed. New clips do not imply new gesture classifiers: wave and thumbs-up are the current recognized gestures. The source photo must exactly match the demo photo before existing Plitvice footage is reused.
+Sign-in links expire after 15 minutes and can be consumed once, atomically. The token travels in a URL fragment, is removed from browser history, and requires an explicit confirmation POST so link scanners cannot log in. Sessions expire after seven days. Invitation access expires after seven days unless activated; the People page can renew it. Request endpoints apply per-email and per-IP rate limits and do not reveal whether an address exists.
 
-Prices are configuration previews. The studio displays planned totals and explicitly records zero tokens charged. A paid-looking badge is not an enforced paywall.
+Resend uses the existing CRM sender configuration. Required variables: `RESEND_API_KEY`, `RESEND_FROM_EMAIL`, `STUDIO_APP_URL` (canonical HTTPS origin), `STUDIO_AUTH_MODE=email`, `STUDIO_SECURE_COOKIE=1`, `STUDIO_OWNER_EMAILS`, and `DATABASE_URL=${{Postgres.DATABASE_URL}}`. Keep credentials in Railway variables only. Preparing access never sends an email; the explicit Send sign-in invitation action does.
 
-## How deployment works today
+## Motus publishing
 
-Deployments are manual Railway CLI uploads of an explicit staging directory. GitHub auto-deploy is not configured by this workflow. Never run `railway up` against the repository root: that risks uploading local photos, credentials, and work folders.
+Admin → draft/published/disabled recipe → published catalog → selected immutable recipe snapshots → review → offline pack. Saving a draft preserves the previous published revision. Publishing exposes the new revision for future spectra. Disabling removes it from the catalog. Existing spectrum snapshots do not change.
 
-1. Run `node --test tests/gesture-gate.test.cjs tests/player-queue.test.cjs tests/diagnostics.test.cjs` and `.venv/bin/python -m pytest tests/test_studio.py -q`.
-2. Commit only reviewed application source, tests, scripts, and documentation. Keep private photo/media/credentials in ignored folders.
-3. Make a fresh staging folder:
-   ```sh
-   python3 scripts/stage-studio.py --photo work/studio-demo/photo.jpg --wave work/studio-demo/wave.mp4 --thumbs-up work/studio-demo/thumbs_up.mp4 --idle work/studio-demo/idle_blink.mp4 --output work/studio-deploy-RELEASE
-   ```
-4. Upload that folder using `railway up work/studio-deploy-RELEASE --path-as-root --project 5cc644a4-894c-488b-9034-2f3b0267d1db --service 21e53877-d9e3-4b3e-b6aa-5ca01026f8f9 --environment 3ce5ca55-7d61-4f71-98fd-32172f4fcec9 --detach`.
-5. Verify deployment success, `/health`, login, existing portrait playback, and `/admin`. Record the deployment ID alongside the source commit.
+Prompt, plain-text Markdown, optional H.264 driving video, trigger and proposed token price are configuration only. One recipe per gesture/idle slot; multiple manual actions are allowed. Wave and thumbs-up are the current gesture classifiers. Private demo footage is available only to the team, for the matching source photo.
 
-Secrets live in Railway environment variables and ignored local `.env` files. Source photos, generated clips, driving assets, reports, packs, and releases must never be committed to the public repo. The explicit staging bundle includes only the required demo photo/clips and application runtime, not the rest of the local workspace.
+## Builds and releases
 
-## Pi delivery
+`.github/workflows/studio.yml` checks the player, studio, accounts and Pi launcher. Account tests use PostgreSQL 18 with a unique schema per test. `railway.json` selects `Dockerfile.studio` and the database-aware `/health` check. `.dockerignore` allowlists only runtime source and requirements; private assets and secrets must never enter Git.
 
-`pi/launch.py` is a standard-library localhost server and pack validator. `scripts/build-pi-kit.py` bundles it, the current trusted player/model, a portrait ZIP, checksums, and setup instructions. It is a starter kit for Raspberry Pi OS Desktop, not a pre-flashed OS image. Camera permission is granted normally in a dedicated Chromium profile. Kiosk mode fills the screen and attempts camera startup; desktop startup can be enabled after the hardware test. See `pi/README.md`.
+The current release branch is `codex/motus-admin-pi-kit`. Push reviewed changes and wait for Studio checks before a production release. Railway's GitHub source connection and any CI deployment gate must be verified in the service settings; the presence of this workflow alone does not enforce a Railway gate.
 
-The setup follows Raspberry Pi's documented labwc/Chromium approach: https://www.raspberrypi.com/tutorials/how-to-use-a-raspberry-pi-in-kiosk-mode/
+A one-time bootstrap CLI bundle copies the existing private demo assets into `/data/demo`:
 
-## Next steps, in order
+```sh
+python3 scripts/stage-studio.py --bootstrap-demo --photo work/studio-demo/photo.jpg --wave work/studio-demo/wave.mp4 --thumbs-up work/studio-demo/thumbs_up.mp4 --idle work/studio-demo/idle_blink.mp4 --output work/studio-deploy-RELEASE
+```
 
-1. Validate the kit on the purchased Pi/display/camera: offline operation, cold boot, recognition rate, response latency, long-running stability.
-2. Use the Motus admin to settle recipe structure and driving-video workflow. Choose provider/local-worker adapters and explicit per-job spending limits before enabling generation.
-3. Make releases reproducible from GitHub source. Move private demo assets out of the image build before enabling GitHub auto-deploy; use a private asset store or explicit provisioning step. Do not commit media to make CI easier.
-4. Before opening to customers, add individual accounts and server-enforced owner/admin roles, durable jobs, a token ledger and verified payment webhooks. Reserve tokens atomically at job submission, settle once, and reconcile failed provider submissions. Add backups for the persistent volume; use a database/private object storage as needed for that multi-user stage.
+Upload only that explicit staging directory with `railway up --path-as-root`. Subsequent GitHub Docker builds use `/data/demo` and include no private media. Verify `/health`, existing spectra/media, the Motus catalog and People after deployment. Keep the app at one replica while media and preparation jobs use a single volume. Restarted preparation jobs become retryable failures.
 
-Do not add payment infrastructure, a worker fleet, or a second frontend merely to support this owner-only prototype.
+## Pi and next work
 
-## Product language
+The existing `pi/launch.py` and `scripts/build-pi-kit.py` ship the same player, clips and MediaPipe assets for offline operation. Account changes do not require a new player. Hardware verification remains outstanding; see `pi/README.md`.
 
-User-facing objects are **spectra** (singular: **spectrum**). Creation uses **Craft your Spectrum**. Internal pack filenames, API paths, and identifiers retain their existing names for compatibility.
+Before wider beta: configure and test database/volume backups, settle retention and upload quotas, and measure preparation capacity. Generation needs a durable job queue and explicit spending limits; payments need a transaction ledger. Neither is required for the current invite-only placeholder studio.
+
+Product language: singular **spectrum**, plural **spectra**, creation **Craft your Spectrum**.
