@@ -11,6 +11,7 @@ from fastapi.responses import HTMLResponse, RedirectResponse
 from sqlalchemy import select, insert, update, delete
 from .database import users, emails, links, sessions, limits, audit, fingerprint
 from .packs import STATIC
+from .email_messages import email_message
 
 LINK_TTL=15*60
 SESSION_TTL=7*24*60*60
@@ -29,8 +30,8 @@ class ResendMailer:
     def __init__(self):
         self.key=os.getenv('RESEND_API_KEY');self.sender=os.getenv('RESEND_FROM_EMAIL')
         if not self.key or not self.sender:raise RuntimeError('Configure Resend before enabling email sign-in.')
-    def __call__(self,address,url):
-        response=httpx.post('https://api.resend.com/emails',headers={'Authorization':'Bearer '+self.key,'Idempotency-Key':fingerprint(url)},json={'from':'Spectramotus <'+self.sender+'>','to':[address],'subject':'Your Spectramotus sign-in link','text':f'Sign in to Spectramotus:\n\n{url}\n\nThis link expires in 15 minutes and can be used once. If you did not request it, you can ignore this email.'},timeout=15)
+    def __call__(self,address,url,kind='signin'):
+        response=httpx.post('https://api.resend.com/emails',headers={'Authorization':'Bearer '+self.key,'Idempotency-Key':fingerprint(kind+url)},json={'from':'Spectramotus <'+self.sender+'>','to':[address],**email_message(url,kind)},timeout=15)
         if response.status_code>=400:raise RuntimeError('Sign-in email delivery failed.')
 
 class Accounts:
@@ -66,7 +67,7 @@ class Accounts:
             c.execute(delete(links).where(links.c.expires_at<now-86400))
             c.execute(delete(sessions).where(sessions.c.expires_at<now))
             c.execute(insert(links).values(hash=hashed,user_id=user['id'],email=address,expires_at=now+LINK_TTL))
-        try:self.mailer(address,self.app_url+'/auth/verify#token='+raw)
+        try:self.mailer(address,self.app_url+'/auth/verify#token='+raw,kind='invite' if user['status']=='invited' else 'signin')
         except Exception:
             with self.store.engine.begin() as c:
                 c.execute(delete(links).where(links.c.hash==hashed));self.store.event(c,None,'sign_in_delivery_failed',user['id'])

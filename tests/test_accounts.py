@@ -24,7 +24,7 @@ def studio(tmp_path):
         url=make_url(url).update_query_dict({'options':'-csearch_path='+schema}).render_as_string(hide_password=False)
     else:url='sqlite:///'+str(tmp_path/'accounts.sqlite')
     messages=[]
-    app=create_app(data_dir=tmp_path/'data',database_url=url,auth_mode='email',owner_emails=['owner@example.com','alias@example.com'],mailer=lambda email,url:messages.append((email,url)))
+    app=create_app(data_dir=tmp_path/'data',database_url=url,auth_mode='email',owner_emails=['owner@example.com','alias@example.com'],mailer=lambda email,url,kind='signin':messages.append((email,url,kind)))
     with TestClient(app) as client:yield app,client,messages
     if admin:
         with admin.begin() as c:c.execute(text('DROP SCHEMA '+schema+' CASCADE'))
@@ -169,3 +169,47 @@ def test_public_landing_private_studio_and_secure_logout(studio):
         assert browser.get('/api/me').status_code==401
         assert 'A photo that' in browser.get('/').text
         assert browser.post('/logout',headers={'Origin':'https://testserver'}).status_code==200
+
+
+def test_email_design_selection_and_single_use_invitation(studio):
+    app,c,m=studio
+    login(c,m)
+    assert m[-1][2]=='signin'
+    ident=c.post('/api/admin/users',data={'email':'new@example.com','role':'beta'}).json()['id']
+    assert c.post('/api/admin/users/'+ident+'/send').status_code==200
+    assert m[-1][2]=='invite'
+    raw=token(m)
+    newcomer=TestClient(app)
+    assert newcomer.post('/auth/consume',data={'token':raw}).status_code==200
+    assert newcomer.post('/auth/consume',data={'token':raw}).status_code==400
+    newcomer.post('/auth/request',data={'email':'new@example.com'})
+    assert m[-1][2]=='signin'
+
+
+def test_branded_resend_payload(monkeypatch):
+    import base64
+    from spectramotus.studio.accounts import ResendMailer
+    monkeypatch.setenv('RESEND_API_KEY','test-only')
+    monkeypatch.setenv('RESEND_FROM_EMAIL','hello@example.com')
+    payloads=[]
+    def capture(url,**kwargs):
+        payloads.append(kwargs['json'])
+        return type('Response',(),{'status_code':200})()
+    monkeypatch.setattr('spectramotus.studio.accounts.httpx.post',capture)
+    url='https://example.com/auth/verify#token=test&value="escaped"'
+    for kind in ('invite','signin'):
+        ResendMailer()('recipient@example.com',url,kind=kind)
+    invite,signin=payloads
+    assert invite['subject']=='You’re invited to Spectramotus'
+    assert 'Accept your invitation' in invite['html']
+    assert 'Sign in to your studio' in signin['html']
+    for payload in payloads:
+        assert payload['to']==['recipient@example.com']
+        assert url in payload['text']
+        assert '&amp;value=&quot;escaped&quot;' in payload['html']
+        assert '{{action_url}}' not in payload['html'] and 'preview-only' not in payload['html']
+        assert '15 minutes' in payload['text']
+    assert 'attachments' not in signin
+    attachment=invite['attachments'][0]
+    assert 'cid:'+attachment['content_id'] in invite['html']
+    assert base64.b64decode(attachment['content']).startswith(b'\x89PNG\r\n\x1a\n')
