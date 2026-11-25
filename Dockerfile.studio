@@ -5,5 +5,6 @@ COPY requirements-studio.txt .
 RUN pip install --no-cache-dir -r requirements-studio.txt
 COPY spectramotus/__init__.py spectramotus/__init__.py
 COPY spectramotus/studio spectramotus/studio
+COPY pi pi
 ENV STUDIO_DATA_DIR=/data STUDIO_DEMO_DIR=/data/demo STUDIO_SECURE_COOKIE=1
 CMD ["sh", "-c", "uvicorn spectramotus.studio.app:create_app --factory --host 0.0.0.0 --port ${PORT:-8080} --proxy-headers --forwarded-allow-ips='*'"]

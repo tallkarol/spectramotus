@@ -75,6 +75,9 @@ def test_invite_permissions_and_immediate_revocation(studio):
     assert beta_client.get('/admin').status_code==403
     assert beta_client.get('/api/admin/users').status_code==403
     assert beta_client.get('/api/admin/motus').status_code==403
+    assert beta_client.get('/admin/pi').status_code==403
+    assert beta_client.get('/api/admin/pi-kit').status_code==403
+    assert beta_client.get('/api/admin/pi-kit/download').status_code==403
     admin_client=TestClient(app);login(admin_client,m,'admin@example.com')
     assert admin_client.get('/api/admin/motus').status_code==200
     assert admin_client.post('/api/admin/users',data={'email':'elevated@example.com','role':'admin'}).status_code==403

@@ -7,3 +7,8 @@
 !spectramotus/studio/**
 **/__pycache__
 **/*.pyc
+
+!pi
+!pi/*.py
+!pi/*.md
+!pi/setup.sh

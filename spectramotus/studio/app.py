@@ -21,6 +21,7 @@ from .database import Store, sessions, fingerprint
 from .accounts import Accounts, ResendMailer, mount_accounts, email_address
 from sqlalchemy import delete, select
 from .motus import MotusLibrary, mount_motus
+from .pi_kit import mount_pi_kit
 from .packs import STATIC, MAX_UPLOAD, make_pack, photo_signature, runtime_files
 
 
@@ -191,6 +192,7 @@ def create_app(data_dir=None, password=None, demo_dir=None, database_url=None, a
     app.state.store=store;app.state.accounts=accounts;app.state.owner=owner
     mount_motus(app,motus)
     mount_accounts(app,accounts)
+    mount_pi_kit(app,root,demo)
     @app.middleware('http')
     async def auth(request,call_next):
         path=request.url.path

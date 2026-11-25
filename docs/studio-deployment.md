@@ -63,3 +63,7 @@ The studio opens on a spectrum gallery. Selecting a card opens the existing play
 Logout uses a POST, revokes the server-side session and expires the Secure/HttpOnly host-prefixed cookie with matching attributes. Ordinary pages now use `Referrer-Policy: same-origin`: `no-referrer` made browser form POSTs send `Origin: null`, which the CSRF check correctly rejected. Token confirmation pages retain `no-referrer`. Cross-origin POSTs remain rejected. GET `/logout` is a confirmation screen only.
 
 Owner confirmed email delivery and sign-in on 25 November. Local browser checks covered the landing interaction, gallery, demo preparation, Motus dialog, mobile layout and logout/private-route behavior. A production-cookie regression covers revocation and cookie flags. GitHub access is now authorized and the CI-gated deployment trigger is enabled.
+
+## Admin Pi kit download
+
+`/admin/pi` contains setup and testing instructions. `/api/admin/pi-kit/download` is restricted by the existing owner/admin middleware; anonymous users and beta members cannot retrieve Karol's media. The archive is assembled from `/data/demo` plus the shipped Pi scripts and shared player. No generation calls are made. Content hashes invalidate the cached ZIP when media or code changes; archives live under `/data/pi-kits`. The same `build_kit` function serves admin downloads and the local packaging CLI. Docker includes only the Pi scripts/docs, not private media. If required demo files are missing, the page reports unavailable and downloads return 409.

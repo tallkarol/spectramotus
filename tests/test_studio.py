@@ -241,3 +241,35 @@ def test_selected_motus_persist_and_do_not_reappear_on_restart(tmp_path):
         assert r['status']=='ready'
         assert [x['id'] for x in r['manifest']['clips']]==['wave']
         assert len(c.get('/api/admin/motus').json()['items'])==3
+
+
+def test_admin_pi_kit_download_contains_private_media_and_current_player(tmp_path):
+    import hashlib
+    demo=tmp_path/'demo';demo.mkdir()
+    Image.new('RGB',(120,160),'green').save(demo/'photo.jpg')
+    video(demo/'wave.mp4')
+    for name in ('thumbs_up','idle_blink'):(demo/(name+'.mp4')).write_bytes((demo/'wave.mp4').read_bytes())
+    with TestClient(create_app(tmp_path/'data',password='test-secret',demo_dir=demo)) as c:
+        assert c.get('/api/admin/pi-kit/download').status_code==401
+        assert c.get('/admin/pi',follow_redirects=False).status_code==303
+        assert c.post('/login',data={'password':'test-secret'}).status_code==200
+        assert 'rpicam-hello --list-cameras' in c.get('/admin/pi').text
+        assert c.get('/api/admin/pi-kit').json()['available'] is True
+        r=c.get('/api/admin/pi-kit/download');assert r.status_code==200
+        assert r.headers['x-kit-sha256']==hashlib.sha256(r.content).hexdigest()
+        with zipfile.ZipFile(io.BytesIO(r.content)) as outer:
+            prefix='Spectramotus-Pi5-Karol/'
+            assert 'camera csi' in outer.read(prefix+'README.md').decode()
+            assert 'TEST-DRIVE.md' in [Path(n).name for n in outer.namelist()]
+            for line in outer.read(prefix+'SHA256SUMS').decode().splitlines():
+                sha,name=line.split('  ',1);assert hashlib.sha256(outer.read(prefix+name)).hexdigest()==sha
+            with zipfile.ZipFile(io.BytesIO(outer.read(prefix+'portrait.zip'))) as pack:
+                manifest=json.loads(pack.read('manifest.json'))
+                assert manifest['credits_spent']==0
+                assert {c['id'] for c in manifest['clips']}=={'wave','thumbs_up','idle_blink'}
+                assert pack.read('clips/wave.mp4')==(demo/'wave.mp4').read_bytes()
+                assert 'cameraProfile' in pack.read('runtime/camera.js').decode()
+        assert c.get('/api/admin/pi-kit/download').content==r.content # Cached, immutable archive.
+        (demo/'wave.mp4').unlink()
+        assert c.get('/api/admin/pi-kit').json()['available'] is False
+        assert c.get('/api/admin/pi-kit/download').status_code==409
