@@ -9,8 +9,9 @@ import subprocess
 import tempfile
 import threading
 import zipfile
-from fastapi import HTTPException
+from fastapi import HTTPException, Request
 from fastapi.responses import FileResponse, HTMLResponse
+from .navigation import render_page
 from .packs import STATIC, digest, make_pack, normalized_photo
 
 PI_FILES=('launch.py','camera_bridge.py','doctor.py','setup.sh','README.md','TEST-DRIVE.md')
@@ -67,7 +68,7 @@ def mount_pi_kit(app, root, demo):
                 release.replace(dest)
             return dest
     @app.get('/admin/pi',response_class=HTMLResponse)
-    def page():return (STATIC/'pi-kit.html').read_text()
+    def page(request:Request):return render_page(request,'pi-kit.html')
     @app.get('/api/admin/pi-kit')
     def info():
         try:sources();available=True

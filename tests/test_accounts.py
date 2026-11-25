@@ -176,6 +176,38 @@ def test_public_landing_private_studio_and_secure_logout(studio):
         assert browser.post('/logout',headers={'Origin':'https://testserver'}).status_code==200
 
 
+def test_shared_navigation_uses_the_current_session_on_every_page(studio):
+    app, owner, messages = studio
+
+    def header(client, path):
+        response = client.get(path, follow_redirects=False)
+        assert response.status_code == 200, path
+        assert 'href="/studio-nav.css"' in response.text
+        return response.text.split('<header class="studio-nav">', 1)[1].split('</header>', 1)[0]
+
+    assert owner.get('/studio-nav.css').headers['content-type'].startswith('text/css')
+    for path in ('/', '/welcome', '/login', '/auth/verify', '/logout'):
+        nav = header(owner, path)
+        assert 'How it works' in nav and 'Sign in' in nav
+        assert 'Your account' not in nav and 'Motus library' not in nav
+
+    login(owner, messages)
+    for path in ('/studio', '/welcome', '/admin', '/admin/users', '/admin/pi', '/logout', '/auth/verify'):
+        nav = header(owner, path)
+        assert 'owner@example.com' in nav and 'method="post"' in nav
+        for destination in ('/welcome', '/admin', '/admin/users', '/admin/pi'):
+            assert f'href="{destination}"' in nav
+            assert (f'href="{destination}" aria-current="page"' in nav) == (destination == path)
+
+    owner.post('/api/admin/users', data={'email': 'beta@example.com', 'role': 'beta'})
+    with TestClient(app) as beta:
+        login(beta, messages, 'beta@example.com')
+        for path in ('/studio', '/welcome', '/logout'):
+            nav = header(beta, path)
+            assert 'About Spectramotus' in nav and 'beta@example.com' in nav
+            assert 'owner@example.com' not in nav and 'href="/admin' not in nav
+
+
 def test_email_design_selection_and_single_use_invitation(studio):
     app,c,m=studio
     login(c,m)

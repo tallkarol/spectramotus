@@ -6,9 +6,9 @@ import subprocess
 import threading
 import time
 import uuid
-from fastapi import APIRouter, File, Form, HTTPException, UploadFile
+from fastapi import APIRouter, File, Form, HTTPException, Request, UploadFile
 from fastapi.responses import FileResponse, HTMLResponse
-from .packs import STATIC
+from .navigation import render_page
 from .database import motus, revisions
 from sqlalchemy import select, insert, update
 
@@ -82,7 +82,7 @@ def mount_motus(app, library):
     router=APIRouter()
 
     @router.get('/admin',response_class=HTMLResponse)
-    def admin():return (STATIC/'admin.html').read_text()
+    def admin(request:Request):return render_page(request,'admin.html')
 
     @router.get('/api/motus')
     def catalog():

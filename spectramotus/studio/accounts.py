@@ -10,7 +10,7 @@ from fastapi import APIRouter, Form, HTTPException, Request
 from fastapi.responses import HTMLResponse, RedirectResponse
 from sqlalchemy import select, insert, update, delete
 from .database import users, emails, links, sessions, limits, audit, fingerprint
-from .packs import STATIC
+from .navigation import render_page
 from .email_messages import email_message
 
 LINK_TTL=15*60
@@ -127,7 +127,7 @@ def mount_accounts(app,accounts):
         return {'message':GENERIC}
 
     @router.get('/auth/verify',response_class=HTMLResponse)
-    def verify():return (STATIC/'verify.html').read_text()
+    def verify(request:Request):return render_page(request,'verify.html')
 
     @router.post('/auth/inspect')
     def inspect(request:Request,token:str=Form(...)):
@@ -145,7 +145,7 @@ def mount_accounts(app,accounts):
         return response
 
     @router.get('/admin/users',response_class=HTMLResponse)
-    def team(request:Request):require_admin(request);return (STATIC/'users.html').read_text()
+    def team(request:Request):require_admin(request);return render_page(request,'users.html')
 
     @router.get('/api/admin/users')
     def listing(request:Request):

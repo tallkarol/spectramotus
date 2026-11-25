@@ -21,6 +21,7 @@ from .database import Store, sessions, fingerprint
 from .accounts import Accounts, ResendMailer, mount_accounts, email_address
 from sqlalchemy import delete, select
 from .motus import MotusLibrary, mount_motus
+from .navigation import NAV_STYLESHEET, render_page
 from .pi_kit import mount_pi_kit
 from .packs import STATIC, MAX_UPLOAD, make_pack, photo_signature, runtime_files
 
@@ -201,7 +202,7 @@ def create_app(data_dir=None, password=None, demo_dir=None, database_url=None, a
             expected=accounts.app_url if mode=='email' else str(request.base_url).rstrip('/')
             if origin and origin.rstrip('/')!=expected:
                 return JSONResponse({'detail':'Cross-origin request refused'},403)
-        public={'/','/welcome','/login','/logout','/health'}|({'/auth/request','/auth/verify','/auth/inspect','/auth/consume'} if mode=='email' else set())
+        public={'/','/welcome','/login','/logout','/health',NAV_STYLESHEET}|({'/auth/request','/auth/verify','/auth/inspect','/auth/consume'} if mode=='email' else set())
         user=accounts.session(request.cookies.get(accounts.cookie)) if mode=='email' else (owner if valid(request.cookies.get('studio')) else None)
         request.state.user=user
         if path not in public and not user:
@@ -230,10 +231,13 @@ def create_app(data_dir=None, password=None, demo_dir=None, database_url=None, a
     def health():
         with store.engine.connect() as c:c.execute(select(1))
         return {'status':'ok','mode':'placeholder','generation_enabled':False,'auth':mode,'database':store.engine.dialect.name}
+    @app.get(NAV_STYLESHEET,include_in_schema=False)
+    def nav_styles():
+        return FileResponse(STATIC/'studio-nav.css',media_type='text/css')
     @app.get('/login',response_class=HTMLResponse)
     def login(request:Request):
         if request.state.user:return RedirectResponse('/studio',303)
-        return (STATIC/('email-login.html' if mode=='email' else 'login.html')).read_text()
+        return render_page(request,'email-login.html' if mode=='email' else 'login.html')
     @app.post('/login')
     async def sign_in(request:Request,password:str=Form(...)):
         if mode!='password':raise HTTPException(410,'Password sign-in has been replaced by email links.')
@@ -242,7 +246,7 @@ def create_app(data_dir=None, password=None, demo_dir=None, database_url=None, a
         if len(recent)>=10: raise HTTPException(429,'Please wait a minute before trying again.')
         if not secrets.compare_digest(password,secret):
             attempts[key]=recent+[now]
-            return HTMLResponse((STATIC/'login.html').read_text().replace('Enter your workshop password.','Incorrect password. Please try again.'),status_code=401)
+            return HTMLResponse(render_page(request,'login.html').replace('Enter your workshop password.','Incorrect password. Please try again.'),status_code=401)
         attempts.pop(key,None)
         response=RedirectResponse('/studio',303);response.set_cookie('studio',token(),httponly=True,secure=secure,samesite='strict',max_age=7*86400);return response
     @app.post('/logout')
@@ -257,14 +261,14 @@ def create_app(data_dir=None, password=None, demo_dir=None, database_url=None, a
     @app.get('/',response_class=HTMLResponse)
     def home(request:Request):
         if request.state.user:return RedirectResponse('/studio',303)
-        return (STATIC/'landing.html').read_text()
+        return render_page(request,'landing.html')
     @app.get('/welcome',response_class=HTMLResponse)
-    def welcome():return (STATIC/'landing.html').read_text()
+    def welcome(request:Request):return render_page(request,'landing.html')
     @app.get('/studio',response_class=HTMLResponse)
-    def index():return (STATIC/'index.html').read_text()
+    def index(request:Request):return render_page(request,'index.html')
     @app.get('/logout',response_class=HTMLResponse)
-    def logout_confirmation():
-        return (STATIC/'logout.html').read_text()
+    def logout_confirmation(request:Request):
+        return render_page(request,'logout.html')
     def visible_record(record,user):
         if user['role']!='beta':return record
         result=dict(record)
@@ -330,13 +334,17 @@ def create_app(data_dir=None, password=None, demo_dir=None, database_url=None, a
                 make_pack(p/'pack',r['manifest'])
         return FileResponse(p/'portrait.zip',media_type='application/zip',filename='spectramotus-'+pid[:8]+'.zip')
     @app.get('/media/{pid}/{path:path}')
-    def media(pid:str,path:str):
+    def media(request:Request,pid:str,path:str):
         p,r=load(pid)
         if r['status'] not in {'needs_review','ready'}:raise HTTPException(409,'Still preparing')
         allowed={'rest.png','preview.html','manifest.json'}|{c['file'] for c in r['manifest']['clips']}
         if path in runtime_files():return FileResponse(STATIC/path)
         if path not in allowed:raise HTTPException(404)
         if path=='preview.html':
-            return HTMLResponse((STATIC/'preview.html').read_text().replace('__MANIFEST__',json.dumps(r['manifest']).replace('<','\\u003c')))
+            if 'embedded' in request.query_params or 'kiosk' in request.query_params:
+                html=(STATIC/'preview.html').read_text()
+            else:
+                html=render_page(request,'preview.html')
+            return HTMLResponse(html.replace('__MANIFEST__',json.dumps(r['manifest']).replace('<','\\u003c')))
         return FileResponse(p/'pack'/path)
     return app
