@@ -143,3 +143,29 @@ def test_legacy_import_is_idempotent_and_preserves_source_files(tmp_path):
     assert store.get_project(p.name)['owner_id']==owner
     assert (p/'project.json').exists()
     assert (root/'backups/before-postgres/projects'/p.name/'project.json').exists()
+
+
+def test_public_landing_private_studio_and_secure_logout(studio):
+    app,c,m=studio
+    assert c.get('/').status_code==200
+    assert 'A photo that' in c.get('/').text
+    assert c.get('/studio',follow_redirects=False).headers['location']=='/login'
+    # Exercise the production cookie prefix and a real HTTPS Origin.
+    a=app.state.accounts;a.secure=True;a.cookie='__Host-spectramotus';a.app_url='https://testserver'
+    with TestClient(app,base_url='https://testserver') as browser:
+        login(browser,m)
+        raw=browser.cookies.get(a.cookie)
+        assert browser.get('/',follow_redirects=False).headers['location']=='/studio'
+        page=browser.get('/studio')
+        assert page.headers['referrer-policy']=='same-origin'
+        assert browser.get('/auth/verify').headers['referrer-policy']=='no-referrer'
+        assert browser.post('/logout',headers={'Origin':'https://evil.example'}).status_code==403
+        assert a.session(raw)
+        response=browser.post('/logout',headers={'Origin':'https://testserver'},follow_redirects=False)
+        assert response.status_code==303 and response.headers['location']=='/'
+        cookie=next(v for v in response.headers.get_list('set-cookie') if a.cookie in v)
+        assert 'Secure' in cookie and 'HttpOnly' in cookie and 'Max-Age=0' in cookie
+        assert not a.session(raw)
+        assert browser.get('/api/me').status_code==401
+        assert 'A photo that' in browser.get('/').text
+        assert browser.post('/logout',headers={'Origin':'https://testserver'}).status_code==200

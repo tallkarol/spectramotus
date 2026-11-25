@@ -138,7 +138,7 @@ def mount_accounts(app,accounts):
         if not accounts.throttle('consume:'+str(request.client.host),30,900):raise HTTPException(429,'Please wait before trying again.')
         raw=accounts.consume(token)
         from fastapi.responses import JSONResponse
-        response=JSONResponse({'redirect':'/'})
+        response=JSONResponse({'redirect':'/studio'})
         response.set_cookie(accounts.cookie,raw,max_age=SESSION_TTL,secure=accounts.secure,httponly=True,samesite='lax',path='/')
         response.delete_cookie('studio',path='/')
         return response

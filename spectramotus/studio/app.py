@@ -199,7 +199,7 @@ def create_app(data_dir=None, password=None, demo_dir=None, database_url=None, a
             expected=accounts.app_url if mode=='email' else str(request.base_url).rstrip('/')
             if origin and origin.rstrip('/')!=expected:
                 return JSONResponse({'detail':'Cross-origin request refused'},403)
-        public={'/login','/health'}|({'/auth/request','/auth/verify','/auth/inspect','/auth/consume'} if mode=='email' else set())
+        public={'/','/welcome','/login','/logout','/health'}|({'/auth/request','/auth/verify','/auth/inspect','/auth/consume'} if mode=='email' else set())
         user=accounts.session(request.cookies.get(accounts.cookie)) if mode=='email' else (owner if valid(request.cookies.get('studio')) else None)
         request.state.user=user
         if path not in public and not user:
@@ -214,7 +214,8 @@ def create_app(data_dir=None, password=None, demo_dir=None, database_url=None, a
             if record['owner_id']!=user['id']:return JSONResponse({'detail':'Spectrum not found.'},404)
         response=await call_next(request)
         response.headers['X-Content-Type-Options']='nosniff'
-        response.headers['Referrer-Policy']='no-referrer'
+        # Suppressing referrers on ordinary forms makes browsers send Origin: null.
+        response.headers['Referrer-Policy']='no-referrer' if path.startswith('/auth/') else 'same-origin'
         response.headers['Cache-Control']='no-store'
         response.headers['X-Frame-Options']='SAMEORIGIN'
         response.headers['Content-Security-Policy']="default-src 'self'; script-src 'self' 'unsafe-inline'; style-src 'self' 'unsafe-inline'; img-src 'self' blob: data:; media-src 'self' blob:; frame-src 'self'; connect-src 'self'; frame-ancestors 'self'; base-uri 'none'; form-action 'self'"
@@ -228,7 +229,9 @@ def create_app(data_dir=None, password=None, demo_dir=None, database_url=None, a
         with store.engine.connect() as c:c.execute(select(1))
         return {'status':'ok','mode':'placeholder','generation_enabled':False,'auth':mode,'database':store.engine.dialect.name}
     @app.get('/login',response_class=HTMLResponse)
-    def login(): return (STATIC/('email-login.html' if mode=='email' else 'login.html')).read_text()
+    def login(request:Request):
+        if request.state.user:return RedirectResponse('/studio',303)
+        return (STATIC/('email-login.html' if mode=='email' else 'login.html')).read_text()
     @app.post('/login')
     async def sign_in(request:Request,password:str=Form(...)):
         if mode!='password':raise HTTPException(410,'Password sign-in has been replaced by email links.')
@@ -239,15 +242,27 @@ def create_app(data_dir=None, password=None, demo_dir=None, database_url=None, a
             attempts[key]=recent+[now]
             return HTMLResponse((STATIC/'login.html').read_text().replace('Enter your workshop password.','Incorrect password. Please try again.'),status_code=401)
         attempts.pop(key,None)
-        response=RedirectResponse('/',303);response.set_cookie('studio',token(),httponly=True,secure=secure,samesite='strict',max_age=7*86400);return response
+        response=RedirectResponse('/studio',303);response.set_cookie('studio',token(),httponly=True,secure=secure,samesite='strict',max_age=7*86400);return response
     @app.post('/logout')
     def logout(request:Request):
         raw=request.cookies.get(accounts.cookie)
         if raw:
             with store.engine.begin() as c:c.execute(delete(sessions).where(sessions.c.hash==fingerprint(raw)))
-        response=RedirectResponse('/login',303);response.delete_cookie('studio');response.delete_cookie(accounts.cookie,path='/');return response
+        response=RedirectResponse('/',303)
+        response.delete_cookie('studio',path='/',secure=secure,httponly=True,samesite='strict')
+        response.delete_cookie(accounts.cookie,path='/',secure=accounts.secure,httponly=True,samesite='lax')
+        return response
     @app.get('/',response_class=HTMLResponse)
+    def home(request:Request):
+        if request.state.user:return RedirectResponse('/studio',303)
+        return (STATIC/'landing.html').read_text()
+    @app.get('/welcome',response_class=HTMLResponse)
+    def welcome():return (STATIC/'landing.html').read_text()
+    @app.get('/studio',response_class=HTMLResponse)
     def index():return (STATIC/'index.html').read_text()
+    @app.get('/logout',response_class=HTMLResponse)
+    def logout_confirmation():
+        return (STATIC/'logout.html').read_text()
     def visible_record(record,user):
         if user['role']!='beta':return record
         result=dict(record)

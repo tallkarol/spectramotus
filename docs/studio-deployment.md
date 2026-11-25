@@ -53,3 +53,13 @@ Product language: singular **spectrum**, plural **spectra**, creation **Craft yo
 ## Release verification
 
 The live health check reports email authentication and PostgreSQL. Anonymous project, admin and media requests return 401. Owner mailbox delivery and the authenticated production UI still require the owner's first sign-in; no test email or Dave invitation has been sent by this release. The login page was visually checked. Local PostgreSQL integration tests, SQLite tests and GitHub PostgreSQL checks passed.
+
+## Public page and studio refresh
+
+`/` shows the public product page to visitors and redirects signed-in members to `/studio`. `/welcome` always shows the public page, including for team review. `/studio`, media and admin remain authenticated. The public illustration contains no member photo or footage.
+
+The studio opens on a spectrum gallery. Selecting a card opens the existing player/review/export flow; returning to the collection unloads the player. Creation and account controls work on narrow screens.
+
+Logout uses a POST, revokes the server-side session and expires the Secure/HttpOnly host-prefixed cookie with matching attributes. Ordinary pages now use `Referrer-Policy: same-origin`: `no-referrer` made browser form POSTs send `Origin: null`, which the CSRF check correctly rejected. Token confirmation pages retain `no-referrer`. Cross-origin POSTs remain rejected. GET `/logout` is a confirmation screen only.
+
+Owner confirmed email delivery and sign-in on 25 November. Local browser checks covered the landing interaction, gallery, demo preparation, Motus dialog, mobile layout and logout/private-route behavior. A production-cookie regression covers revocation and cookie flags. Automatic deployments still need GitHub passkey reauthentication to grant the Railway App access to this repo.
