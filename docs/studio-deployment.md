@@ -32,7 +32,7 @@ Prompt, plain-text Markdown, optional H.264 driving video, trigger and proposed 
 
 `.github/workflows/studio.yml` checks the player, studio, accounts and Pi launcher. Account tests use PostgreSQL 18 with a unique schema per test. `railway.json` selects `Dockerfile.studio` and the database-aware `/health` check. `.dockerignore` allowlists only runtime source and requirements; private assets and secrets must never enter Git.
 
-The current release branch is `codex/motus-admin-pi-kit`. Push reviewed changes and wait for Studio checks before a production release. Railway's GitHub source connection and any CI deployment gate must be verified in the service settings; the presence of this workflow alone does not enforce a Railway gate.
+The current release branch is `codex/motus-admin-pi-kit`. Source commit `cc84973` passed all 45 checks and deployed successfully from GitHub (deployment `06ec5950-e790-4dbd-9d63-2cc26f037c81`). Push reviewed changes and wait for Studio checks before a production release. Automatic push deployments are **not enabled yet**: Railway refused to create a deployment trigger because its GitHub integration does not have access to `tallkarol/spectramotus`. Grant the Railway GitHub app access to that repository, create the trigger for this branch, and enable Wait for CI (`checkSuites=true`). The public repository source connection permits manual builds but is not evidence that an automatic trigger exists.
 
 A one-time bootstrap CLI bundle copies the existing private demo assets into `/data/demo`:
 
@@ -49,3 +49,7 @@ The existing `pi/launch.py` and `scripts/build-pi-kit.py` ship the same player, 
 Before wider beta: configure and test database/volume backups, settle retention and upload quotas, and measure preparation capacity. Generation needs a durable job queue and explicit spending limits; payments need a transaction ledger. Neither is required for the current invite-only placeholder studio.
 
 Product language: singular **spectrum**, plural **spectra**, creation **Craft your Spectrum**.
+
+## Release verification
+
+The live health check reports email authentication and PostgreSQL. Anonymous project, admin and media requests return 401. Owner mailbox delivery and the authenticated production UI still require the owner's first sign-in; no test email or Dave invitation has been sent by this release. The login page was visually checked. Local PostgreSQL integration tests, SQLite tests and GitHub PostgreSQL checks passed.
