@@ -56,4 +56,4 @@ Do not add payment infrastructure, a worker fleet, or a second frontend merely t
 
 ## Product language
 
-User-facing objects are **spectras** (singular: **spectra**). Creation uses **Craft a spectra**. Internal pack filenames, API paths, and identifiers retain their existing names for compatibility.
+User-facing objects are **spectras** (singular: **spectra**). Creation uses **Craft your Spectrum**. Internal pack filenames, API paths, and identifiers retain their existing names for compatibility.
