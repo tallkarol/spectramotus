@@ -128,9 +128,11 @@ def test_drafts_preserve_published_recipe_and_keep_history(studio):
     data={**original,'ident':'wave','name':'Draft wave','prompt':'Private draft','publication':'draft'}
     assert c.post('/api/admin/motus',data=data).status_code==200
     catalog=c.get('/api/motus').json()['items'];assert next(r for r in catalog if r['id']=='wave')['name']=='Wave'
+    assert c.get('/api/admin/motus').json()['published_revisions']['wave']==1
     data.update(revision=2,publication='published')
     assert c.post('/api/admin/motus',data=data).status_code==200
     assert next(r for r in c.get('/api/motus').json()['items'] if r['id']=='wave')['name']=='Draft wave'
+    assert c.get('/api/admin/motus').json()['published_revisions']['wave']==3
     assert len(c.get('/api/admin/motus/wave/revisions').json()['items'])==3
 
 def test_legacy_import_is_idempotent_and_preserves_source_files(tmp_path):

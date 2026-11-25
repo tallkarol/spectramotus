@@ -14,6 +14,8 @@ import tempfile
 import threading
 import webbrowser
 import zipfile
+from urllib.parse import urlencode
+from camera_bridge import CameraBridge
 
 ROOT=Path(__file__).resolve().parent
 
@@ -46,17 +48,47 @@ def prepare(archive, destination):
     return manifest
 
 
-def install_autostart():
+def install_autostart(camera,profile):
     if sys.platform!='linux':raise SystemExit('Autostart setup is for Raspberry Pi OS Desktop only.')
     folder=Path.home()/'.config/labwc';folder.mkdir(parents=True,exist_ok=True)
     path=folder/'autostart';text=path.read_text() if path.exists() else ''
     marker='# Spectramotus player'
     if marker in text:
         print('Spectramotus autostart already exists. Edit ~/.config/labwc/autostart if you move this kit.');return
-    command=' '.join(shlex.quote(s) for s in [sys.executable,str(ROOT/'launch.py'),'--kiosk'])
+    command=' '.join(shlex.quote(s) for s in [sys.executable,str(ROOT/'launch.py'),'--kiosk','--camera',camera,'--camera-profile',profile])
     if path.exists():shutil.copyfile(path,path.with_name('autostart.before-spectramotus'))
     path.write_text(text+'\n'+marker+'\n'+command+' &\n')
     print('Added desktop autostart. Enable desktop auto-login in Raspberry Pi OS settings, then reboot after first-run camera setup.')
+
+
+class PlayerHandler(SimpleHTTPRequestHandler):
+    def camera_request(self):
+        expected='127.0.0.1:'+str(self.server.server_port)
+        return (self.headers.get('Host')==expected and
+                self.headers.get('X-Spectramotus-Camera')=='1' and
+                self.headers.get('Origin') in (None,'http://'+expected))
+    def reply(self,status,data,kind='application/json'):
+        self.send_response(status);self.send_header('Content-Type',kind)
+        self.send_header('Cache-Control','no-store');self.send_header('Content-Length',str(len(data)))
+        self.send_header('X-Content-Type-Options','nosniff');self.end_headers();self.wfile.write(data)
+    def camera_error(self,error):
+        self.reply(503,json.dumps({'error':str(error)}).encode())
+    def do_POST(self):
+        if self.path not in {'/camera/start','/camera/stop'}:self.send_error(404);return
+        if not self.camera_request():self.send_error(403);return
+        if not self.server.camera:self.send_error(404);return
+        try:
+            if self.path=='/camera/start':self.server.camera.start()
+            else:self.server.camera.stop()
+            self.reply(200,b'{"ok":true}')
+        except Exception as error:self.camera_error(error)
+    def do_GET(self):
+        if self.path=='/camera/frame':
+            if not self.camera_request():self.send_error(403);return
+            if not self.server.camera:self.send_error(404);return
+            try:self.reply(200,self.server.camera.snapshot(),'image/jpeg')
+            except Exception as error:self.camera_error(error)
+        else:super().do_GET()
 
 
 def main():
@@ -64,18 +96,23 @@ def main():
     parser.add_argument('pack',nargs='?',type=Path,default=ROOT/'portrait.zip')
     parser.add_argument('--port',type=int,default=8767)
     parser.add_argument('--kiosk',action='store_true')
+    parser.add_argument('--camera',choices=['usb','csi'],default='usb')
+    parser.add_argument('--camera-profile',choices=['balanced','light'],default='balanced')
     parser.add_argument('--no-browser',action='store_true')
     parser.add_argument('--verify-only',action='store_true')
     parser.add_argument('--install-autostart',action='store_true')
     args=parser.parse_args()
-    if args.install_autostart:install_autostart();return
+    if args.install_autostart:install_autostart(args.camera,args.camera_profile);return
     with tempfile.TemporaryDirectory(prefix='spectramotus-') as temp:
         target=Path(temp)/'portrait';manifest=prepare(args.pack,target)
         print('Verified portrait:',manifest['name'],flush=True)
         if args.verify_only:return
-        handler=partial(SimpleHTTPRequestHandler,directory=str(target))
+        handler=partial(PlayerHandler,directory=str(target))
         with ThreadingHTTPServer(('127.0.0.1',args.port),handler) as server:
-            url=f'http://127.0.0.1:{server.server_port}/preview.html'+('?kiosk=1' if args.kiosk else '')
+            server.camera=CameraBridge((640,480) if args.camera_profile=='light' else (960,720)) if args.camera=='csi' else None
+            options={'camera':args.camera,'cameraProfile':args.camera_profile}
+            if args.kiosk:options['kiosk']='1'
+            url=f'http://127.0.0.1:{server.server_port}/preview.html?'+urlencode(options)
             thread=threading.Thread(target=server.serve_forever,daemon=True);thread.start()
             print('Offline player:',url,flush=True)
             process=None
@@ -97,5 +134,6 @@ def main():
             finally:
                 if process and process.poll() is None:process.terminate()
                 server.shutdown();thread.join()
+                if server.camera:server.camera.stop()
 
 if __name__=='__main__':main()

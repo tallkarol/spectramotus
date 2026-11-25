@@ -91,7 +91,7 @@ def mount_motus(app, library):
             for r in library.published()]}
 
     @router.get('/api/admin/motus')
-    def listing():return {'items':library.listing(),'billing_enabled':False,'generation_enabled':False}
+    def listing():return {'items':library.listing(),'published_revisions':{r['id']:r['revision'] for r in library.published()},'billing_enabled':False,'generation_enabled':False}
 
     @router.get('/api/admin/motus/{ident}/revisions')
     def history(ident:str):return {'items':library.history(ident)}
