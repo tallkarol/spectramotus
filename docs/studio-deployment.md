@@ -32,7 +32,7 @@ Prompt, plain-text Markdown, optional H.264 driving video, trigger and proposed 
 
 `.github/workflows/studio.yml` checks the player, studio, accounts and Pi launcher. Account tests use PostgreSQL 18 with a unique schema per test. `railway.json` selects `Dockerfile.studio` and the database-aware `/health` check. `.dockerignore` allowlists only runtime source and requirements; private assets and secrets must never enter Git.
 
-The current release branch is `codex/motus-admin-pi-kit`. Source commit `cc84973` passed all 45 checks and deployed successfully from GitHub (deployment `06ec5950-e790-4dbd-9d63-2cc26f037c81`). Push reviewed changes and wait for Studio checks before a production release. Automatic push deployments are **not enabled yet**: Railway refused to create a deployment trigger because its GitHub integration does not have access to `tallkarol/spectramotus`. Grant the Railway GitHub app access to that repository, create the trigger for this branch, and enable Wait for CI (`checkSuites=true`). The public repository source connection permits manual builds but is not evidence that an automatic trigger exists.
+The current release branch is `codex/motus-admin-pi-kit`. The current application release is `f980909`, deployed from GitHub as `36291eeb-9b8b-401a-a9c8-57b36cda6331`. All 46 checks passed. Railway's GitHub App now has repository access. Automatic deployments follow `codex/motus-admin-pi-kit` and wait for successful GitHub checks (`checkSuites=true`, trigger `baa75d9d-7a68-4d28-8b6f-f0f82f806a02`). Push reviewed changes to that branch; other branches do not deploy production. `main` is not yet the production branch.
 
 A one-time bootstrap CLI bundle copies the existing private demo assets into `/data/demo`:
 
@@ -52,7 +52,7 @@ Product language: singular **spectrum**, plural **spectra**, creation **Craft yo
 
 ## Release verification
 
-The live health check reports email authentication and PostgreSQL. Anonymous project, admin and media requests return 401. Owner mailbox delivery and the authenticated production UI still require the owner's first sign-in; no test email or Dave invitation has been sent by this release. The login page was visually checked. Local PostgreSQL integration tests, SQLite tests and GitHub PostgreSQL checks passed.
+The live health check reports email authentication and PostgreSQL. Anonymous project, admin and media requests return 401. The owner confirmed email sign-in. The production gallery showed both existing spectra and loaded the existing player. Browser logout returned to the public landing page, and revisiting `/studio` required sign-in. Dave's invitation has not been sent. The login page was visually checked. Local PostgreSQL integration tests, SQLite tests and GitHub PostgreSQL checks passed.
 
 ## Public page and studio refresh
 
@@ -62,4 +62,4 @@ The studio opens on a spectrum gallery. Selecting a card opens the existing play
 
 Logout uses a POST, revokes the server-side session and expires the Secure/HttpOnly host-prefixed cookie with matching attributes. Ordinary pages now use `Referrer-Policy: same-origin`: `no-referrer` made browser form POSTs send `Origin: null`, which the CSRF check correctly rejected. Token confirmation pages retain `no-referrer`. Cross-origin POSTs remain rejected. GET `/logout` is a confirmation screen only.
 
-Owner confirmed email delivery and sign-in on 25 November. Local browser checks covered the landing interaction, gallery, demo preparation, Motus dialog, mobile layout and logout/private-route behavior. A production-cookie regression covers revocation and cookie flags. Automatic deployments still need GitHub passkey reauthentication to grant the Railway App access to this repo.
+Owner confirmed email delivery and sign-in on 25 November. Local browser checks covered the landing interaction, gallery, demo preparation, Motus dialog, mobile layout and logout/private-route behavior. A production-cookie regression covers revocation and cookie flags. GitHub access is now authorized and the CI-gated deployment trigger is enabled.
